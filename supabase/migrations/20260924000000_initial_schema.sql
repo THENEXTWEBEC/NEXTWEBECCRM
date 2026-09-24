@@ -349,12 +349,13 @@ create trigger on_auth_user_created
   after insert on auth.users for each row execute procedure public.handle_new_user();
 
 -- Seeded services are editable by an admin later.
-insert into public.services (name) values
-  ('Landing page / rediseño básico'),
-  ('Web profesional'),
-  ('Web empresarial'),
-  ('Web corporativa'),
-  ('Proyecto personalizado');
+insert into public.services (name, default_price) values
+  ('Landing page / rediseño básico', 250),
+  ('Web profesional', 450),
+  ('Web empresarial', 750),
+  ('Web corporativa', 1350),
+  ('Proyecto corporativo amplio', 2000),
+  ('Otro / personalizado', 0);
 
 -- RLS is explicitly enabled on every application table.
 alter table public.profiles enable row level security;
