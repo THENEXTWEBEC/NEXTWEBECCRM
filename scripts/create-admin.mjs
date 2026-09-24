@@ -10,7 +10,7 @@ const readHiddenPassword = () => new Promise((resolve,reject)=>{
   const previousRaw=stdin.isRaw;
   stdin.setRawMode(true);stdin.resume();
   let value='';
-  const finish=error=>{stdin.removeListener('data',onData);stdin.setRawMode(previousRaw||false);stdout.write('\n');error?reject(error):resolve(value);};
+  const finish=error=>{stdin.removeListener('data',onData);stdin.setRawMode(previousRaw||false);stdin.pause();stdout.write('\n');error?reject(error):resolve(value);};
   const onData=chunk=>{for(const char of String(chunk)){if(char==='\u0003')return finish(new Error('Operación cancelada.'));if(char==='\r'||char==='\n')return finish();if(char==='\u007f'||char==='\b')value=value.slice(0,-1);else value+=char;}};
   stdin.on('data',onData);
 });
