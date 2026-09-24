@@ -73,7 +73,7 @@ app.use('/api', (req,res,next) => {
 });
 
 app.get('/api/health', (_req, res) => {
-  try { db.prepare('SELECT 1').get(); res.json({ status: 'ok', database: 'ok' }); }
+  try { db.prepare('SELECT 1').get(); res.json({ status: 'ok', database: 'connected' }); }
   catch { res.status(503).json({ status: 'error', database: 'unavailable' }); }
 });
 app.get('/api/auth/session', (req,res) => {
@@ -271,4 +271,4 @@ app.get('/api/admin/backup',requireAuth,requireAdmin,async(_req,res)=>{
 });
 app.get('/{*path}',(_req,res)=>res.sendFile(resolve('index.html')));
 app.use((error,_req,res,_next)=>{ if(process.env.LOG_LEVEL==='debug')console.error(error.message);res.status(500).json({error:{message:'Error interno del servidor.'}}); });
-app.listen(port,()=>{ if(process.env.LOG_LEVEL==='info')console.info(`NextWebEC CRM listening on ${port}`); });
+app.listen(port,'0.0.0.0',()=>{ if(process.env.LOG_LEVEL==='info')console.info(`NextWebEC CRM listening on 0.0.0.0:${port}`); });

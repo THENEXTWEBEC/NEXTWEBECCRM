@@ -3,9 +3,13 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22 <23"
+  },
   "scripts": {
     "start": "node server/index.mjs",
     "dev": "node --watch server/index.mjs",
+    "build": "npm run check",
     "migrate": "node server/migrate.mjs",
     "create-admin": "node scripts/create-admin.mjs",
     "backup": "node scripts/backup.mjs",

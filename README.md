@@ -19,7 +19,7 @@ La aplicación no depende de Supabase, Firebase ni proveedores externos para aut
 
 ## Requisitos
 
-- Node.js 22 o superior.
+- Node.js 22.x (el proyecto fija la versión en `.nvmrc` y `.node-version`; `package.json` exige `>=22 <23`).
 - npm.
 - Para producción pública: una máquina o servidor con Node, almacenamiento persistente y HTTPS.
 
@@ -28,6 +28,10 @@ La aplicación no depende de Supabase, Firebase ni proveedores externos para aut
 Desde la carpeta del repositorio:
 
 ```sh
+nvm install
+nvm use
+node --version
+npm --version
 npm install
 cp .env.example .env
 ```
@@ -41,6 +45,8 @@ npm run dev
 ```
 
 Abre `http://localhost:3000`. `npm start` ejecuta el servidor sin modo de desarrollo. La primera cuenta debe crearse con el comando interactivo `create-admin`; el repositorio no contiene credenciales iniciales.
+
+`npm run build` valida la sintaxis del servidor y de los archivos JavaScript del navegador. La interfaz es JavaScript sin transpilación, por lo que no genera un directorio `dist/`. El comando `npm run start` escucha en `0.0.0.0` y sirve tanto la API como la interfaz; las migraciones SQLite pendientes se aplican antes de aceptar solicitudes. `GET /api/health` responde cuando SQLite está accesible.
 
 ## Variables de entorno
 
@@ -134,3 +140,4 @@ Para `crm.thenextwebec.com`, crea en el DNS del dominio un registro `A` para `cr
 - **La cookie no funciona detrás de TLS:** establece `TRUST_PROXY=1` solo cuando la app esté detrás de un proxy confiable que reenvíe `X-Forwarded-Proto`.
 - **Restauré una copia:** detén el proceso antes de reemplazar la base; al iniciar se aplicarán migraciones nuevas.
 - **GitHub Pages muestra una pantalla vieja:** Pages ya no es el destino del CRM backend; ejecuta `npm start` en el servidor configurado.
+- **Node no coincide con la versión requerida:** ejecuta `nvm install` y `nvm use` en la carpeta del proyecto, o configura tu gestor de versiones para leer `.node-version`.
