@@ -131,7 +131,8 @@ const filtersFrom = (req, spec) => {
   const clauses=[], vals=[];
   for (const [key,value] of Object.entries(req.query)) {
     if (!spec.cols.includes(key) || ['select','order','limit','single','maybeSingle'].includes(key)) continue;
-    if (key==='deleted_at' && value==='null') clauses.push('deleted_at IS NULL');
+    if (key==='deleted_at' && value==='not.null') clauses.push('deleted_at IS NOT NULL');
+    else if (key==='deleted_at' && value==='null') clauses.push('deleted_at IS NULL');
     else if (value==='null') clauses.push(`${key} IS NULL`);
     else { clauses.push(`${key} = ?`); vals.push(value); }
   }
@@ -217,7 +218,7 @@ app.patch('/api/data/:name/:id', requireAuth, (req,res) => {
   try {
     const row=db.prepare(`SELECT * FROM ${spec.table} WHERE id=?`).get(req.params.id);if(!row||!canSee(req,name,row))return err(res,404,'Registro no encontrado.');
     if(name==='leads'&&req.user.role!=='admin'&&req.body.owner_id) return err(res,403,'Solo administración puede reasignar oportunidades.');
-    if(name==='leads'&&req.body.deleted_at&&req.user.role!=='admin')return err(res,403,'Solo administración puede archivar oportunidades.');
+    if(name==='leads'&&Object.hasOwn(req.body,'deleted_at')&&req.user.role!=='admin')return err(res,403,'Solo administración puede archivar oportunidades.');
     if(['payments','activities','lead_audit_log','lead_status_history','profiles'].includes(name))return err(res,403,'Este registro no se puede modificar.');
     if(name==='commissions'&&req.user.role!=='admin')return err(res,403,'Solo administración puede registrar pagos de comisión.');
     if(name==='sales'&&req.user.role!=='admin')return err(res,403,'Solo administración puede editar ventas.');
@@ -233,7 +234,7 @@ app.patch('/api/data/:name/:id', requireAuth, (req,res) => {
       if(updates.phone&&String(updates.phone).length>40)return err(res,400,'El teléfono es demasiado largo.');
       if(updates.notes&&String(updates.notes).length>4000)return err(res,400,'Las notas superan el límite permitido.');
       if(updates.owner_id&&req.user.role==='admin'){const target=db.prepare("SELECT id FROM users WHERE id=? AND role='sales' AND is_active=1").get(updates.owner_id);if(!target)return err(res,400,'El nuevo responsable debe ser un colaborador activo.');}else if(req.user.role!=='admin')delete updates.owner_id;
-      if(updates.deleted_at)updates.deleted_by=req.user.id;
+      if(Object.hasOwn(updates,'deleted_at')){updates.deleted_at=updates.deleted_at?now():null;updates.deleted_by=updates.deleted_at?req.user.id:null;}
       if(updates.status&&!['new','contacted','interested','meeting_scheduled','meeting_completed','proposal_sent','negotiation','awaiting_payment','won','lost'].includes(updates.status))return err(res,400,'Etapa no válida.');
       if(updates.priority&&!['low','medium','high','urgent'].includes(updates.priority))return err(res,400,'Prioridad no válida.');
       if(updates.status==='lost'&&!updates.loss_reason&&!row.loss_reason) return err(res,400,'Registra el motivo antes de marcarla como perdida.');

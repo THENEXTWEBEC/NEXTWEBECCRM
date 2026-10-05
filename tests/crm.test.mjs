@@ -46,6 +46,24 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   const paid=await call(admin,`/api/data/commissions/${commission.id}`,{method:'PATCH',body:{paid_amount:100,paid_at:'2026-09-24'}});assert.equal(paid.status,200);assert.equal(paid.json.data.pending_amount,100);
   const reassigned=await call(admin,`/api/data/leads/${leadId}`,{method:'PATCH',body:{owner_id:(await call(admin,'/api/data/profiles')).json.data.find(x=>x.email==='two@example.test').id}});assert.equal(reassigned.status,200);assert.equal(reassigned.json.data.original_owner_id,(await call(admin,'/api/data/profiles')).json.data.find(x=>x.email==='one@example.test').id);
 
+  const owner=two;
+  assert.equal((await call(owner,`/api/data/leads/${leadId}`,{method:'PATCH',body:{deleted_at:'2026-10-05'}})).status,403);
+  assert.equal((await call(owner,`/api/data/leads/${leadId}`,{method:'PATCH',body:{deleted_at:null}})).status,403);
+  assert.equal((await call(admin,`/api/data/leads/${leadId}`,{method:'PATCH',body:{deleted_at:'2026-10-05'}})).status,200);
+  assert.deepEqual((await call(admin,'/api/data/leads?deleted_at=null')).json.data,[]);
+  const archived=(await call(admin,'/api/data/leads?deleted_at=not.null')).json.data;
+  assert.equal(archived.length,1);assert.equal(archived[0].id,leadId);assert.equal(archived[0].deleted_by,adminId);
+  assert.deepEqual((await call(owner,'/api/data/leads?deleted_at=not.null')).json.data,[]);
+  assert.equal((await call(owner,`/api/data/leads/${leadId}`,{method:'PATCH',body:{deleted_at:null}})).status,404);
+  const restored=await call(admin,`/api/data/leads/${leadId}`,{method:'PATCH',body:{deleted_at:null}});
+  assert.equal(restored.status,200);assert.equal(restored.json.data.deleted_at,null);assert.equal(restored.json.data.deleted_by,null);
+  assert.deepEqual((await call(admin,'/api/data/leads?deleted_at=not.null')).json.data,[]);
+  assert.equal((await call(owner,'/api/data/leads?deleted_at=null')).json.data[0].id,leadId);
+  assert.equal((await call(admin,`/api/data/activities?lead_id=${leadId}`)).json.data[0].subject,'First call');
+  assert.equal((await call(admin,`/api/data/sales?lead_id=${leadId}`)).json.data[0].collected_amount,500);
+  const audit=(await call(admin,`/api/data/lead_audit_log?lead_id=${leadId}`)).json.data;
+  assert.ok(audit.some(h=>h.before_data?.deleted_at&&h.after_data.deleted_at===null));
+
   const backup=await fetch(`${base}/api/admin/backup`,{headers:{cookie:admin},signal:AbortSignal.timeout(10000)});assert.equal(backup.status,200);assert.match(backup.headers.get('content-type'),/application\/octet-stream/);assert.ok((await backup.arrayBuffer()).byteLength>1000);
   assert.equal((await fetch(`${base}/api/health`)).status,200);
 });
