@@ -21,7 +21,7 @@
 - **Comisión generada**: cobros confirmados × tasa guardada para cada venta.
 - **Comisión pagada**: pagos administrativos; comisión pendiente = generada − pagada.
 - **Reasignación**: mueve la oportunidad y tareas pendientes. No cambia autores históricos ni el beneficiario de una comisión ya creada.
-- **Estados**: Nuevo, Contactado, Respondió, Reunión agendada, Reunión realizada, Propuesta, Negociación, Ganado, Perdido. Ganado/Perdido cancelan tareas aún pendientes.
+- **Estados**: Nuevo, Contactado, Respondió, Reunión agendada, Reunión realizada, Propuesta, Negociación, Ganado, Perdido. Perdido cancela tareas aún pendientes. Ganado conserva los seguimientos y permite programar nuevos, incluidos cobros; aparecen en Mi día y Seguimientos.
 - **Horarios**: America/Guayaquil (UTC−5). Una tarea 6 octubre 09:00 se guarda como 14:00 UTC y se presenta siempre a las 09:00 Ecuador.
 - **Abandono**: sin actividad comercial o 3, 7, 14+ días desde la última actividad; excluye ganado, perdido y archivado.
 - **Duplicados**: teléfono ecuatoriano normalizado, email y dominio son coincidencias fuertes. Nombre de empresa es débil y puede continuar tras confirmación explícita. Solo se abre un registro ajeno si el rol permite consultarlo.

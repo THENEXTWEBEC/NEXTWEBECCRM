@@ -15,6 +15,8 @@ test('Connected screens render consistent data, roles, pending tasks and Ecuador
  const seed={profile:{id:'admin',role:'admin',full_name:'Admin'},leads:[lead],sales:[],payments:[],commissions:[],followups:[{id:'task',lead_id:'lead',owner_id:'sales',type:'call',status:'pending',description:'Llamar a Stephanie',due_at:'2026-10-06T14:00:00Z'}],finance:{sold:0,won:0,collected:0,balance:0,generated:0,paid:0,pending:0},profiles:[{id:'admin',role:'admin',full_name:'Admin',is_active:true},{id:'sales',role:'executive',full_name:'Isabella',is_active:true}],services:[],archivedLeads:[],activities:[]};
  context.qa.seed(seed);context.qa.dashboard([lead]);assert.match(html,/Mi día/);assert.match(html,/Llamar a Stephanie/);assert.match(html,/09:00/);assert.doesNotMatch(html,/Facturación/);
  context.qa.followups();assert.match(html,/Llamar a Stephanie/);assert.match(html,/data-complete="task"/);
+ context.qa.seed({...seed,leads:[{...lead,status:'won'}]});context.qa.followups();assert.match(html,/Llamar a Stephanie/);context.qa.dashboard();assert.match(html,/Llamar a Stephanie/);
+ context.qa.seed({...seed,leads:[{...lead,deleted_at:'2026-10-05T14:00:00Z'}]});context.qa.followups();assert.doesNotMatch(html,/Llamar a Stephanie/);context.qa.seed(seed);
  context.qa.pipeline([lead]);assert.match(html,/Iceman/);assert.match(html,/Isabella/);
  context.qa.table([lead]);assert.match(html,/Archivados/);assert.match(html,/Exportar CSV/);
  context.qa.settings();assert.match(html,/Comisión para nuevas ventas/);assert.match(html,/financial-review/);
