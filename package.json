@@ -13,7 +13,7 @@
     "migrate": "node server/migrate.mjs",
     "create-admin": "node scripts/create-admin.mjs",
     "backup": "node scripts/backup.mjs",
-    "check": "node --check server/index.mjs && node --check server/db.mjs && node --check src/app.js && node --check src/api.js && node --check scripts/create-admin.mjs && node --check scripts/backup.mjs",
+    "check": "node --check server/index.mjs && node --check server/db.mjs && node --check src/app.js && node --check src/api.js && node --check scripts/create-admin.mjs && node --check scripts/backup.mjs && node --check src/domain.js && node --check server/workflow.mjs",
     "test": "node --test"
   },
   "dependencies": {
