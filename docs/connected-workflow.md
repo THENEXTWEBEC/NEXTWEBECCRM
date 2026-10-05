@@ -14,7 +14,7 @@
 
 ## Definiciones y decisiones
 
-- **Valor estimado**: potencial del pipeline; no es una venta ni una factura. En el dashboard del ejecutivo, **Dinero en juego** suma el valor estimado de sus oportunidades abiertas, incluidas propuestas y negociaciones; excluye ganadas, perdidas y archivadas.
+- **Valor estimado**: potencial del pipeline; no es una venta ni una factura. En el dashboard del ejecutivo, **Dinero en juego** suma el valor estimado de sus oportunidades abiertas, incluidas propuestas y negociaciones; excluye ganadas, perdidas y archivadas. Actividad del equipo muestra el mismo cálculo en una columna por colaborador.
 - **Valor vendido**: suma de valores finales de oportunidades Ganadas; incluye ventas archivadas. Si una oportunidad se reabre, deja de aportar vendido hasta volver a Ganado; los cobros confirmados históricos permanecen.
 - **Dinero cobrado**: suma de cobros confirmados.
 - **Saldo por cobrar**: saldo de ventas Ganadas, incluidas archivadas.
