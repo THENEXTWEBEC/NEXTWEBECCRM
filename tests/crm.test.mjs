@@ -126,6 +126,28 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   assert.equal((await call(two,'/api/rpc/financial_review',{method:'POST',body:{}})).status,403);
   assert.equal((await call(admin,'/api/rpc/financial_review',{method:'POST',body:{}})).json.data.inconsistencies.length,0);
 
+  // Permanent deletion is admin-only, explicitly confirmed and restricted to archives without financial movements.
+  const disposableId=weakConfirmed.json.data[0].lead_id;
+  assert.equal((await call(admin,`/api/admin/leads/${disposableId}`,{method:'DELETE',body:{confirm_name:'Iceman'}})).status,400);
+  await call(one,'/api/data/activities',{method:'POST',body:{lead_id:disposableId,type:'note',subject:'Disposable test note'}});
+  await call(one,'/api/data/followups',{method:'POST',body:{lead_id:disposableId,type:'call',due_at:'2026-10-08T09:00:00-05:00',description:'Disposable test followup'}});
+  assert.equal((await call(one,`/api/data/leads/${disposableId}`,{method:'PATCH',body:{status:'won',final_value:1200}})).json.error,null);
+  await call(admin,`/api/data/leads/${disposableId}`,{method:'PATCH',body:{deleted_at:'2026-10-05'}});
+  assert.equal((await call(one,`/api/admin/leads/${disposableId}`,{method:'DELETE',body:{confirm_name:'Iceman'}})).status,403);
+  assert.equal((await call(admin,`/api/admin/leads/${disposableId}`,{method:'DELETE',body:{confirm_name:'Incorrect'}})).status,400);
+  const financeBeforeDelete=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data.finance;
+  assert.equal((await call(admin,`/api/admin/leads/${disposableId}`,{method:'DELETE',body:{confirm_name:'Iceman'}})).status,200);
+  const afterDelete=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;
+  assert.equal(afterDelete.finance.sold,financeBeforeDelete.sold-1200);assert.equal(afterDelete.finance.collected,financeBeforeDelete.collected);
+  assert.equal(afterDelete.archived.some(l=>l.id===disposableId),false);assert.equal(afterDelete.sales.some(s=>s.lead_id===disposableId),false);
+  assert.deepEqual((await call(admin,`/api/data/activities?lead_id=${disposableId}`)).json.data,[]);
+  assert.deepEqual((await call(admin,`/api/data/followups?lead_id=${disposableId}`)).json.data,[]);
+  assert.deepEqual((await call(admin,`/api/data/lead_audit_log?lead_id=${disposableId}`)).json.data,[]);
+  await call(admin,`/api/data/leads/${leadId}`,{method:'PATCH',body:{deleted_at:'2026-10-05'}});
+  assert.equal((await call(admin,`/api/admin/leads/${leadId}`,{method:'DELETE',body:{confirm_name:'Iceman'}})).status,400);
+  assert.equal((await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data.finance.collected,financeBeforeDelete.collected);
+  await call(admin,`/api/data/leads/${leadId}`,{method:'PATCH',body:{deleted_at:null}});
+
   const backup=await fetch(`${base}/api/admin/backup`,{headers:{cookie:admin},signal:AbortSignal.timeout(10000)});assert.equal(backup.status,200);assert.match(backup.headers.get('content-type'),/application\/octet-stream/);assert.ok((await backup.arrayBuffer()).byteLength>1000);
   assert.equal((await fetch(`${base}/api/health`)).status,200);
 });

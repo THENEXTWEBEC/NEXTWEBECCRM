@@ -5,8 +5,8 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm } from 'node:fs/promises';
-import { resolve } from 'node:path';
-import { db, migrate } from './db.mjs';
+import { resolve, dirname } from 'node:path';
+import { db, migrate, databasePath } from './db.mjs';
 import { stages } from '../src/domain.js';
 import { validDate, activity, syncNext, createFollowup, saleFor, recomputeSale, setStage, financialSummary } from './workflow.mjs';
 
@@ -308,6 +308,39 @@ app.post('/api/admin/users',requireAuth,requireAdmin,async(req,res)=>{
 app.patch('/api/admin/users/:id',requireAuth,requireAdmin,(req,res)=>{
   const target=db.prepare('SELECT id,role,is_active FROM users WHERE id=?').get(req.params.id);if(!target||target.role!=='sales'||target.id===req.user.id)return err(res,404,'Colaborador no encontrado.');
   const active=Boolean(req.body?.is_active);db.prepare('UPDATE users SET is_active=?,updated_at=? WHERE id=?').run(active?1:0,now(),target.id);res.json({ok:true,is_active:active});
+});
+app.delete('/api/admin/leads/:id',requireAuth,requireAdmin,async(req,res)=>{
+  const validate=()=>{
+    const lead=db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
+    if(!lead)throw new Error('Oportunidad no encontrada.');
+    if(!lead.deleted_at)throw new Error('Solo puedes eliminar oportunidades archivadas.');
+    if(String(req.body?.confirm_name||'').trim()!==lead.company_name)throw new Error('Escribe exactamente el nombre de la empresa para confirmar.');
+    const sale=db.prepare('SELECT * FROM sales WHERE lead_id=?').get(lead.id);
+    if(sale){
+      const payment=db.prepare('SELECT 1 FROM payments WHERE sale_id=? LIMIT 1').get(sale.id);
+      const commission=db.prepare('SELECT * FROM commissions WHERE sale_id=?').get(sale.id);
+      const payout=commission?db.prepare('SELECT 1 FROM commission_payouts WHERE commission_id=? LIMIT 1').get(commission.id):null;
+      if(payment||sale.collected_amount>0||commission?.generated_amount>0||commission?.paid_amount>0||payout)throw new Error('No puedes eliminar una oportunidad con cobros o comisiones registrados. Conserva su historial financiero.');
+    }
+    return lead;
+  };
+  try{
+    validate();
+    const backupDir=resolve(dirname(databasePath),'backups');await mkdir(backupDir,{recursive:true});
+    await db.backup(resolve(backupDir,`before-delete-${uid()}.db`));
+    db.transaction(()=>{
+      const lead=validate();
+      db.prepare('INSERT INTO opportunity_deletion_log(id,opportunity_id,company_name,deleted_by) VALUES(?,?,?,?)').run(uid(),lead.id,lead.company_name,req.user.id);
+      db.prepare('DELETE FROM followups WHERE lead_id=?').run(lead.id);
+      db.prepare('DELETE FROM activities WHERE lead_id=?').run(lead.id);
+      db.prepare('DELETE FROM lead_status_history WHERE lead_id=?').run(lead.id);
+      db.prepare('DELETE FROM lead_audit_log WHERE lead_id=?').run(lead.id);
+      db.prepare('DELETE FROM commissions WHERE sale_id IN (SELECT id FROM sales WHERE lead_id=?)').run(lead.id);
+      db.prepare('DELETE FROM sales WHERE lead_id=?').run(lead.id);
+      db.prepare('DELETE FROM leads WHERE id=?').run(lead.id);
+    })();
+    res.json({data:{deleted:true},error:null});
+  }catch(e){return err(res,400,safeError(e)||'No se pudo eliminar la oportunidad.');}
 });
 app.get('/api/admin/backup',requireAuth,requireAdmin,async(_req,res)=>{
   if(process.env.LOG_LEVEL==='debug')console.info('Backup request authorized');

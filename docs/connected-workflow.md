@@ -10,6 +10,7 @@
 6. Administración registra cobros pendientes o confirmados. Solo los confirmados actualizan cobrado, saldo y comisión. Puede confirmar o cancelar desde la ficha. No se permite una cancelación que deje comisiones generadas por debajo de las ya pagadas.
 7. Administración paga comisiones desde la ficha o Comisiones; puede cambiar la tasa para ventas futuras desde Configuración.
 8. Archivar conserva todos los datos. Administración consulta y restaura en Archivados; una coincidencia fuerte con otro registro activo requiere revisión antes de restaurar.
+9. Administración puede eliminar desde Archivados, escribiendo el nombre de la empresa para confirmar. Solo se permite si no existen cobros ni movimientos de comisión. Se guarda un respaldo completo antes de eliminar; la operación borra la oportunidad y sus relaciones, incluida una venta sin cobros, y conserva una constancia administrativa de la eliminación. Comisiones y totales se actualizan inmediatamente.
 
 ## Definiciones y decisiones
 

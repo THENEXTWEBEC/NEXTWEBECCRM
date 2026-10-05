@@ -19,7 +19,7 @@ test('Connected screens render consistent data, roles, pending tasks and Ecuador
  context.qa.table([lead]);assert.match(html,/Archivados/);assert.match(html,/Exportar CSV/);
  context.qa.settings();assert.match(html,/Comisión para nuevas ventas/);assert.match(html,/financial-review/);
  context.qa.archive();assert.match(html,/No hay oportunidades archivadas/);
- context.qa.seed({...seed,archivedLeads:[{...lead,deleted_at:'2026-10-05T14:00:00Z'}]});context.qa.archive();assert.match(html,/data-restore="lead"/);
+ context.qa.seed({...seed,archivedLeads:[{...lead,deleted_at:'2026-10-05T14:00:00Z'}]});context.qa.archive();assert.match(html,/data-restore="lead"/);assert.match(html,/data-delete-archived="lead"/);
  assert.match(context.qa.history([{operation:'UPDATE',before_data:{deleted_at:null},after_data:{deleted_at:'2026-10-05T14:00:00Z'},created_at:'2026-10-05T14:00:00Z',actor_id:'admin'}]),/Oportunidad archivada/);
  context.qa.seed({...seed,profile:{id:'sales',role:'executive',full_name:'Isabella'}});context.qa.shell();assert.doesNotMatch(app.innerHTML,/data-page="Configuración"/);assert.doesNotMatch(app.innerHTML,/data-page="Archivados"/);assert.match(html,/Mis oportunidades activas/);
  context.qa.table([lead]);assert.doesNotMatch(html,/Exportar CSV|data-page="Archivados"/);
