@@ -25,5 +25,8 @@ test('Connected screens render consistent data, roles, pending tasks and Ecuador
  assert.match(context.qa.history([{operation:'UPDATE',before_data:{deleted_at:null},after_data:{deleted_at:'2026-10-05T14:00:00Z'},created_at:'2026-10-05T14:00:00Z',actor_id:'admin'}]),/Oportunidad archivada/);
  context.qa.seed({...seed,profile:{id:'sales',role:'executive',full_name:'Isabella'}});context.qa.shell();assert.doesNotMatch(app.innerHTML,/data-page="Configuración"/);assert.doesNotMatch(app.innerHTML,/data-page="Archivados"/);assert.match(html,/Mis oportunidades activas/);
  context.qa.table([lead]);assert.doesNotMatch(html,/Exportar CSV|data-page="Archivados"/);
+ const pipelineCards=context.qa.stats([{...lead,status:'proposal_sent',estimated_value:1200},{...lead,id:'negotiation',status:'negotiation',estimated_value:800.25},{...lead,id:'new',status:'new',estimated_value:100},{...lead,id:'won',status:'won',estimated_value:5000},{...lead,id:'lost',status:'lost',estimated_value:6000},{...lead,id:'archived',status:'proposal_sent',deleted_at:'2026-10-05T14:00:00Z',estimated_value:7000}]);
+ assert.match(pipelineCards,/Dinero en juego<\/div><div class="stat-value">\$2,100\.25/);assert.match(pipelineCards,/incluidas propuestas/);assert.match(pipelineCards,/Valor vendido<\/div><div class="stat-value">\$0\.00/);
+
  context.qa.commissions();assert.match(html,/Todavía no hay comisiones/);
 });
