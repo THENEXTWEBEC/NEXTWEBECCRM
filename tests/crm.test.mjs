@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { createServer } from 'node:net';
 import { spawn } from 'node:child_process';
 import bcrypt from 'bcryptjs';
+import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 
 test('CRM authentication, ownership, duplicates, activities and commissions', { timeout: 30000 }, async t => {
@@ -56,7 +57,14 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   assert.equal(ws.finance.collected,1200);assert.equal(ws.finance.balance,0);assert.equal(ws.finance.generated,480);assert.equal(ws.finance.paid,240);assert.equal(ws.finance.pending,240);
   const over=await call(admin,'/api/data/payments',{method:'POST',body:{sale_id:sale.json.data[0].id,amount:1}});assert.ok(over.json.error);
   // A cancellation that would invalidate commissions already paid rolls back.
-  const cancelled=await call(admin,`/api/data/payments/${payment.json.data[0].id}`,{method:'PATCH',body:{status:'cancelled'}});assert.equal(cancelled.json.error,null);
+  const cancelled=await call(admin,`/api/admin/payments/${payment.json.data[0].id}/void`,{method:'POST',body:{reason:'Cobro incorrecto',confirm:true}});assert.ok(cancelled.json.error);
+  const details=(await call(admin,`/api/commissions/${commission.id}/detail`)).json.data;
+  const payoutId=details.payouts[0].id;
+  assert.equal((await call(one,`/api/admin/commission-payouts/${payoutId}/void`,{method:'POST',body:{reason:'Error',confirm:true}})).status,403);
+  assert.equal((await call(admin,`/api/admin/commission-payouts/${payoutId}/void`,{method:'POST',body:{reason:'Error',confirm:true}})).status,200);
+  assert.equal((await call(admin,`/api/admin/commission-payouts/${payoutId}/void`,{method:'POST',body:{reason:'Error',confirm:true}})).status,400);
+  assert.equal((await call(admin,`/api/admin/payments/${payment.json.data[0].id}/void`,{method:'POST',body:{reason:'Cobro incorrecto',confirm:true}})).status,200);
+  assert.equal((await call(admin,`/api/data/commissions/${commission.id}`,{method:'PATCH',body:{paid_amount:240,paid_at:'2026-09-24'}})).json.error,null);
   assert.equal((await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data.finance.generated,240);
   const impossible=await call(admin,`/api/data/payments/${second.json.data[0].id}`,{method:'PATCH',body:{status:'cancelled'}});assert.ok(impossible.json.error);
   assert.equal((await call(admin,'/api/data/payments')).json.data.find(p=>p.id===second.json.data[0].id).status,'confirmed');
@@ -148,6 +156,42 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   assert.equal((await call(admin,`/api/admin/leads/${leadId}`,{method:'DELETE',body:{confirm_name:'Iceman'}})).status,400);
   assert.equal((await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data.finance.collected,financeBeforeDelete.collected);
   await call(admin,`/api/data/leads/${leadId}`,{method:'PATCH',body:{deleted_at:null}});
+
+  await call(admin,'/api/rpc/create_lead_if_unique',{method:'POST',body:{p_company:'RUBA',p_contact:'Real QA protected'}});
+  await call(admin,'/api/rpc/set_commission_rate',{method:'POST',body:{rate:0.4}});
+  const realBefore=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;
+  const fake=(await call(admin,'/api/rpc/create_lead_if_unique',{method:'POST',body:{p_company:'Pepitos Grill',p_contact:'QA ficticio'}})).json.data[0].lead_id;
+  await call(admin,`/api/data/leads/${fake}`,{method:'PATCH',body:{status:'won',final_value:450}});
+  let fakeWS=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;
+  const fsale=fakeWS.sales.find(s=>s.lead_id===fake),fc=fakeWS.commissions.find(c=>c.sale_id===fsale.id);
+  const fp=(await call(admin,'/api/data/payments',{method:'POST',body:{sale_id:fsale.id,amount:450}})).json.data[0];
+  const payoutBody={amount:180,request_key:'fake-payout'};
+  const payout=(await call(admin,`/api/admin/commissions/${fc.id}/payouts`,{method:'POST',body:payoutBody})).json.data;
+  assert.equal((await call(admin,`/api/admin/commissions/${fc.id}/payouts`,{method:'POST',body:payoutBody})).json.data.id,payout.id);
+  await call(admin,`/api/data/leads/${fake}`,{method:'PATCH',body:{deleted_at:'2026-10-13'}});
+  assert.equal((await call(admin,`/api/admin/leads/${fake}`,{method:'DELETE',body:{confirm_name:'Pepitos Grill'}})).status,400);
+  assert.equal((await call(admin,`/api/admin/payments/${fp.id}/void`,{method:'POST',body:{reason:'Prueba',confirm:true}})).status,400);
+  assert.equal((await call(admin,`/api/admin/commission-payouts/${payout.id}/void`,{method:'POST',body:{reason:'Prueba',confirm:true}})).status,200);
+  assert.equal((await call(admin,`/api/admin/payments/${fp.id}/void`,{method:'POST',body:{reason:'',confirm:true}})).status,400);
+  assert.equal((await call(admin,`/api/admin/payments/${fp.id}/void`,{method:'POST',body:{reason:'Prueba',confirm:true}})).status,200);
+  fakeWS=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;
+  assert.equal(fakeWS.commissions.find(c=>c.id===fc.id).generated_amount,0);
+  assert.equal(fakeWS.sales.find(s=>s.id===fsale.id).pending_balance,450);
+  assert.equal((await call(admin,`/api/admin/payments/${fp.id}/void`,{method:'POST',body:{reason:'Prueba',confirm:true}})).status,400);
+  assert.equal((await call(admin,`/api/admin/leads/${fake}`,{method:'DELETE',body:{confirm_name:'Pepitos Grill'}})).status,200);
+  const finalWS=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;
+  assert.deepEqual(finalWS.finance,realBefore.finance);
+  assert.deepEqual(finalWS.sales,realBefore.sales);
+  assert.equal(finalWS.archived.some(l=>l.id===fake),false);
+  assert.deepEqual(finalWS.leads,realBefore.leads);
+  const verified=new Database(resolve(dir,'crm.db'),{readonly:true});
+  assert.equal(verified.pragma('integrity_check',{simple:true}),'ok');
+  assert.deepEqual(verified.pragma('foreign_key_check'),[]);
+  const archivedFinance=JSON.parse(verified.prepare('SELECT snapshot FROM financial_archive WHERE opportunity_id=?').get(fake).snapshot);
+  assert.equal(archivedFinance.payouts[0].amount,180);
+  assert.ok(archivedFinance.payouts[0].voided_at);
+  assert.equal(archivedFinance.payments[0].status,'cancelled');
+  verified.close();
 
   const backup=await fetch(`${base}/api/admin/backup`,{headers:{cookie:admin},signal:AbortSignal.timeout(10000)});assert.equal(backup.status,200);assert.match(backup.headers.get('content-type'),/application\/octet-stream/);assert.ok((await backup.arrayBuffer()).byteLength>1000);
   assert.equal((await fetch(`${base}/api/health`)).status,200);

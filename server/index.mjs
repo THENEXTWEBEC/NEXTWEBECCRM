@@ -6,7 +6,7 @@ import rateLimit from 'express-rate-limit';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
-import { db, migrate, databasePath } from './db.mjs';
+import { db, migrate, databasePath, verifyBackup } from './db.mjs';
 import { stages } from '../src/domain.js';
 import { validDate, activity, syncNext, createFollowup, saleFor, recomputeSale, setStage, financialSummary } from './workflow.mjs';
 
@@ -253,7 +253,7 @@ app.patch('/api/data/:name/:id', requireAuth, (req,res) => {
     if(name==='leads'&&req.user.role!=='admin'&&Object.hasOwn(req.body,'owner_id')) return err(res,403,'Solo administración puede reasignar oportunidades.');
     if(name==='leads'&&Object.hasOwn(req.body,'deleted_at')&&req.user.role!=='admin')return err(res,403,'Solo administración puede archivar oportunidades.');
     if(name==='followups'){if(row.status!=='pending')return err(res,400,'Este seguimiento ya terminó.');const body=req.body, status=body.status||row.status;if(!['pending','completed','cancelled'].includes(status))return err(res,400,'Estado de seguimiento inválido.');const result=db.transaction(()=>{const description=String(body.description??row.description).trim(),type=body.type||row.type;if(!description||description.length>1000||!['call','whatsapp','email','meeting','proposal','other'].includes(type))throw new Error('Tipo o descripción inválidos.');db.prepare('UPDATE followups SET due_at=?,type=?,description=?,status=?,updated_at=?,completed_by=?,completed_at=? WHERE id=?').run(body.due_at?validDate(body.due_at):row.due_at,type,description,status,now(),status==='completed'?req.user.id:null,status==='completed'?now():null,row.id);if(status==='completed')activity(row.lead_id,req.user.id,type,description,'Seguimiento completado');syncNext(row.lead_id,req.user.id);const after=db.prepare('SELECT * FROM followups WHERE id=?').get(row.id);audit(row.lead_id,'UPDATE',{...row,followup_id:row.id},{...after,followup_id:row.id},req.user.id);return after;})();return res.json({data:result,error:null});}
-    if(name==='payments'){if(req.user.role!=='admin')return err(res,403,'Solo administración puede confirmar o cancelar cobros.');const status=req.body.status;if(!['confirmed','cancelled'].includes(status)||row.status==='cancelled')return err(res,400,'Estado de cobro inválido.');const updated=db.transaction(()=>{if(status===row.status)return row;db.prepare('UPDATE payments SET status=?,confirmed_by=?,confirmed_at=? WHERE id=?').run(status,status==='confirmed'?req.user.id:row.confirmed_by,status==='confirmed'?now():row.confirmed_at,row.id);recomputeSale(row.sale_id);const sale=db.prepare('SELECT lead_id FROM sales WHERE id=?').get(row.sale_id);activity(sale.lead_id,req.user.id,'payment',status==='confirmed'?'Cobro confirmado':'Cobro cancelado',`$${row.amount.toFixed(2)}`);audit(sale.lead_id,'UPDATE',{payment_id:row.id,status:row.status},{payment_id:row.id,status},req.user.id);return db.prepare('SELECT * FROM payments WHERE id=?').get(row.id);})();return res.json({data:updated,error:null});}
+    if(name==='payments'){if(req.user.role!=='admin')return err(res,403,'Solo administración puede confirmar o cancelar cobros.');const status=req.body.status;if(status==='cancelled')return err(res,400,'Usa Anular cobro con un motivo obligatorio.');if(!['confirmed','cancelled'].includes(status)||row.status==='cancelled')return err(res,400,'Estado de cobro inválido.');const updated=db.transaction(()=>{if(status===row.status)return row;db.prepare('UPDATE payments SET status=?,confirmed_by=?,confirmed_at=? WHERE id=?').run(status,status==='confirmed'?req.user.id:row.confirmed_by,status==='confirmed'?now():row.confirmed_at,row.id);recomputeSale(row.sale_id);const sale=db.prepare('SELECT lead_id FROM sales WHERE id=?').get(row.sale_id);activity(sale.lead_id,req.user.id,'payment',status==='confirmed'?'Cobro confirmado':'Cobro cancelado',`$${row.amount.toFixed(2)}`);audit(sale.lead_id,'UPDATE',{payment_id:row.id,status:row.status},{payment_id:row.id,status},req.user.id);return db.prepare('SELECT * FROM payments WHERE id=?').get(row.id);})();return res.json({data:updated,error:null});}
     if(['activities','lead_audit_log','lead_status_history','profiles'].includes(name))return err(res,403,'Este registro no se puede modificar.');
     if(name==='commissions'&&req.user.role!=='admin')return err(res,403,'Solo administración puede registrar pagos de comisión.');
     if(name==='sales'&&req.user.role!=='admin')return err(res,403,'Solo administración puede editar ventas.');
@@ -300,6 +300,47 @@ app.patch('/api/data/:name/:id', requireAuth, (req,res) => {
   }catch(e){res.json({data:null,error:{message:safeError(e)||'No se pudo actualizar el registro.'}});}
 });
 
+
+app.get('/api/commissions/:id/detail',requireAuth,(req,res)=>{
+ const c=db.prepare('SELECT * FROM commissions WHERE id=?').get(req.params.id);
+ if(!c||(req.user.role!=='admin'&&c.owner_id!==req.user.id))return err(res,404,'Comisión no encontrada.');
+ const sale=db.prepare('SELECT * FROM sales WHERE id=?').get(c.sale_id);
+ res.json({data:{commission:c,sale,payments:db.prepare('SELECT * FROM payments WHERE sale_id=?').all(sale.id),payouts:db.prepare('SELECT * FROM commission_payouts WHERE commission_id=? ORDER BY created_at DESC').all(c.id),history:db.prepare('SELECT * FROM lead_audit_log WHERE lead_id=? ORDER BY created_at DESC').all(sale.lead_id)},error:null});
+});
+app.post('/api/admin/commissions/:id/payouts',requireAuth,requireAdmin,(req,res)=>{
+ try{const result=db.transaction(()=>{
+  const c=db.prepare('SELECT * FROM commissions WHERE id=?').get(req.params.id);if(!c)throw new Error('Comisión no encontrada.');
+  const amount=money(req.body.amount),key=String(req.body.request_key||'');
+  if(!Number.isSafeInteger(centsSafe(amount))||amount<=0||!key||key.length>100)throw new Error('Indica un importe válido y una referencia de solicitud.');
+  const old=db.prepare('SELECT * FROM commission_payouts WHERE request_key=?').get(key);
+  if(old){if(old.commission_id!==c.id||old.amount!==amount||old.created_by!==req.user.id)throw new Error('Referencia ya utilizada.');return old;}
+  recomputeSale(c.sale_id);const fresh=db.prepare('SELECT * FROM commissions WHERE id=?').get(c.id);
+  if(centsSafe(amount)>centsSafe(fresh.generated_amount)-centsSafe(fresh.paid_amount))throw new Error('El pago supera la comisión pendiente.');
+  const id=uid();db.prepare('INSERT INTO commission_payouts(id,commission_id,amount,paid_at,created_by,request_key) VALUES(?,?,?,?,?,?)').run(id,c.id,amount,validDate(req.body.paid_at||now()),req.user.id,key);
+  db.prepare('UPDATE commissions SET paid_amount=?,paid_at=? WHERE id=?').run(money(fresh.paid_amount+amount),validDate(req.body.paid_at||now()),c.id);recomputeSale(c.sale_id);
+  const sale=db.prepare('SELECT lead_id FROM sales WHERE id=?').get(c.sale_id);audit(sale.lead_id,'UPDATE',null,{payout_id:id,amount,action:'registered'},req.user.id);
+  return db.prepare('SELECT * FROM commission_payouts WHERE id=?').get(id);
+ }).immediate();res.json({data:result,error:null});}catch(e){err(res,400,safeError(e));}
+});
+for(const kind of ['payments','commission-payouts'])app.post(`/api/admin/${kind}/:id/void`,requireAuth,requireAdmin,(req,res)=>{
+ try{const result=db.transaction(()=>{
+  const reason=String(req.body.reason||'').trim();if(reason.length<3||reason.length>1000||req.body.confirm!==true)throw new Error('Confirma la anulación e indica un motivo de 3 a 1000 caracteres.');
+  const table=kind==='payments'?'payments':'commission_payouts',row=db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(req.params.id);
+  if(!row)throw new Error('Movimiento no encontrado.');
+  if(row.voided_at||row.status==='cancelled')throw new Error('Este movimiento ya fue anulado.');
+  const c=table==='payments'?db.prepare('SELECT * FROM commissions WHERE sale_id=?').get(row.sale_id):db.prepare('SELECT * FROM commissions WHERE id=?').get(row.commission_id);
+  if(table==='payments'&&row.status==='confirmed'&&db.prepare('SELECT 1 FROM commission_payouts WHERE commission_id=? AND voided_at IS NULL').get(c.id))throw new Error('Revierte primero los pagos de esta venta en Comisiones → Ver detalle.');
+  db.prepare(`UPDATE ${table} SET void_reason=?,voided_by=?,voided_at=?${table==='payments'?",status='cancelled'":''} WHERE id=?`).run(reason,req.user.id,now(),row.id);
+  if(table==='commission_payouts'){
+   const paid=db.prepare('SELECT COALESCE(SUM(ROUND(amount*100)),0) AS total,MAX(paid_at) AS last FROM commission_payouts WHERE commission_id=? AND voided_at IS NULL').get(c.id);
+   db.prepare('UPDATE commissions SET paid_amount=?,paid_at=? WHERE id=?').run(paid.total/100,paid.last,c.id);
+  }
+  recomputeSale(c.sale_id);const sale=db.prepare('SELECT lead_id FROM sales WHERE id=?').get(c.sale_id);
+  audit(sale.lead_id,'UPDATE',row,{movement_id:row.id,amount:row.amount,reason,action:'voided',actor:req.user.id},req.user.id);
+  return db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(row.id);
+ }).immediate();res.json({data:result,error:null});}catch(e){err(res,400,safeError(e));}
+});
+
 app.post('/api/admin/users',requireAuth,requireAdmin,async(req,res)=>{
   const name=String(req.body?.full_name||'').trim().replace(/\s+/g,' '), email=normalizeEmail(req.body?.email), password=String(req.body?.password||''), phone=String(req.body?.phone||'').trim();
   if(name.length<2||name.length>120||!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||password.length<12||password.length>200)return err(res,400,'Completa nombre, correo y una contraseña de al menos 12 caracteres.');
@@ -309,6 +350,15 @@ app.patch('/api/admin/users/:id',requireAuth,requireAdmin,(req,res)=>{
   const target=db.prepare('SELECT id,role,is_active FROM users WHERE id=?').get(req.params.id);if(!target||target.role!=='sales'||target.id===req.user.id)return err(res,404,'Colaborador no encontrado.');
   const active=Boolean(req.body?.is_active);db.prepare('UPDATE users SET is_active=?,updated_at=? WHERE id=?').run(active?1:0,now(),target.id);res.json({ok:true,is_active:active});
 });
+app.get('/api/admin/leads/:id/deletion-preview',requireAuth,requireAdmin,(req,res)=>{
+ const lead=db.prepare('SELECT id,company_name,deleted_at FROM leads WHERE id=?').get(req.params.id);
+ if(!lead)return err(res,404,'Oportunidad no encontrada.');
+ const sale=db.prepare('SELECT * FROM sales WHERE lead_id=?').get(lead.id);
+ const commission=sale?db.prepare('SELECT * FROM commissions WHERE sale_id=?').get(sale.id):null;
+ const payments=sale?db.prepare('SELECT * FROM payments WHERE sale_id=?').all(sale.id):[];
+ const payouts=commission?db.prepare('SELECT * FROM commission_payouts WHERE commission_id=?').all(commission.id):[];
+ res.json({data:{lead,sale,commission,payments,payouts,can_delete:Boolean(lead.deleted_at)&&!payments.some(p=>p.status!=='cancelled')&&!payouts.some(p=>!p.voided_at)&&!(sale?.collected_amount>0||commission?.paid_amount>0||commission?.generated_amount>0)},error:null});
+});
 app.delete('/api/admin/leads/:id',requireAuth,requireAdmin,async(req,res)=>{
   const validate=()=>{
     const lead=db.prepare('SELECT * FROM leads WHERE id=?').get(req.params.id);
@@ -317,26 +367,34 @@ app.delete('/api/admin/leads/:id',requireAuth,requireAdmin,async(req,res)=>{
     if(String(req.body?.confirm_name||'').trim()!==lead.company_name)throw new Error('Escribe exactamente el nombre de la empresa para confirmar.');
     const sale=db.prepare('SELECT * FROM sales WHERE lead_id=?').get(lead.id);
     if(sale){
-      const payment=db.prepare('SELECT 1 FROM payments WHERE sale_id=? LIMIT 1').get(sale.id);
+      const payment=db.prepare("SELECT 1 FROM payments WHERE sale_id=? AND status!='cancelled' LIMIT 1").get(sale.id);
       const commission=db.prepare('SELECT * FROM commissions WHERE sale_id=?').get(sale.id);
-      const payout=commission?db.prepare('SELECT 1 FROM commission_payouts WHERE commission_id=? LIMIT 1').get(commission.id):null;
-      if(payment||sale.collected_amount>0||commission?.generated_amount>0||commission?.paid_amount>0||payout)throw new Error('No puedes eliminar una oportunidad con cobros o comisiones registrados. Conserva su historial financiero.');
+      const payout=commission?db.prepare('SELECT 1 FROM commission_payouts WHERE commission_id=? AND voided_at IS NULL LIMIT 1').get(commission.id):null;
+      if(payment||sale.collected_amount>0||commission?.generated_amount>0||commission?.paid_amount>0||payout)throw new Error('Anula primero los cobros y pagos de comisión activos desde el detalle financiero.');
     }
     return lead;
   };
   try{
     validate();
     const backupDir=resolve(dirname(databasePath),'backups');await mkdir(backupDir,{recursive:true});
-    await db.backup(resolve(backupDir,`before-delete-${uid()}.db`));
+    const snapshotPath=resolve(backupDir,`before-delete-${uid()}.db`);await db.backup(snapshotPath);verifyBackup(snapshotPath);
     db.transaction(()=>{
       const lead=validate();
       db.prepare('INSERT INTO opportunity_deletion_log(id,opportunity_id,company_name,deleted_by) VALUES(?,?,?,?)').run(uid(),lead.id,lead.company_name,req.user.id);
       db.prepare('DELETE FROM followups WHERE lead_id=?').run(lead.id);
       db.prepare('DELETE FROM activities WHERE lead_id=?').run(lead.id);
       db.prepare('DELETE FROM lead_status_history WHERE lead_id=?').run(lead.id);
-      db.prepare('DELETE FROM lead_audit_log WHERE lead_id=?').run(lead.id);
+
+      const sale=db.prepare('SELECT * FROM sales WHERE lead_id=?').get(lead.id);
+      if(sale){const commission=db.prepare('SELECT * FROM commissions WHERE sale_id=?').get(sale.id);
+        const snapshot={audit:db.prepare('SELECT * FROM lead_audit_log WHERE lead_id=?').all(lead.id),sale,commission,payments:db.prepare('SELECT * FROM payments WHERE sale_id=?').all(sale.id),payouts:commission?db.prepare('SELECT * FROM commission_payouts WHERE commission_id=?').all(commission.id):[]};
+        db.prepare('INSERT INTO financial_archive VALUES(?,?,?,?,?)').run(uid(),lead.id,JSON.stringify(snapshot),req.user.id,now());
+        db.prepare('DELETE FROM commission_payouts WHERE commission_id IN (SELECT id FROM commissions WHERE sale_id=?)').run(sale.id);
+        db.prepare('DELETE FROM payments WHERE sale_id=?').run(sale.id);
+      }
       db.prepare('DELETE FROM commissions WHERE sale_id IN (SELECT id FROM sales WHERE lead_id=?)').run(lead.id);
       db.prepare('DELETE FROM sales WHERE lead_id=?').run(lead.id);
+      db.prepare('DELETE FROM lead_audit_log WHERE lead_id=?').run(lead.id);
       db.prepare('DELETE FROM leads WHERE id=?').run(lead.id);
     })();
     res.json({data:{deleted:true},error:null});

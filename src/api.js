@@ -33,6 +33,7 @@ const listeners=new Set();
 let currentSession=null;
 const emit=()=>listeners.forEach(fn=>fn('SIGNED_IN',currentSession));
 export const sb={
+  request,
   from:table=>new Query(table),
   rpc:async(name,args={})=>request(`/api/rpc/${encodeURIComponent(name)}`,{method:'POST',body:JSON.stringify(args)}),
   auth:{
