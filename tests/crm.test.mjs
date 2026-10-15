@@ -15,7 +15,7 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   const {db,migrate}=await import('../server/db.mjs');migrate();
   const adminId=randomUUID(), adminPassword='Admin-test-password-42';
   db.prepare("INSERT INTO users(id,email,password_hash,full_name,role) VALUES(?,?,?,?,'admin')").run(adminId,'admin@example.test',await bcrypt.hash(adminPassword,4),'Admin Test');
-  db.prepare("INSERT INTO users(id,email,password_hash,full_name,role) VALUES(?,?,?,?,'admin')").run(randomUUID(),'jose@example.test',await bcrypt.hash(adminPassword,4),'José Guerrero');
+  db.prepare("INSERT INTO users(id,email,password_hash,full_name,role) VALUES(?,?,?,?,'admin')").run(randomUUID(),'jose@example.test',await bcrypt.hash(adminPassword,4),'Jose Ignacio Guerrero');
   db.close();
   const port=await new Promise((resolvePort,reject)=>{const s=createServer();s.once('error',reject);s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolvePort(p));});});
   const env={...process.env,PORT:String(port),NODE_ENV:'test',DATABASE_PATH:resolve(dir,'crm.db'),LOG_LEVEL:'error'};
@@ -42,6 +42,9 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   const activity=await call(one,'/api/data/activities',{method:'POST',body:{lead_id:leadId,type:'note',subject:'First call',body:'Follow up'}});assert.equal(activity.status,200);const savedSession=await call(one,'/api/auth/session');assert.equal(activity.json.data[0].created_by,savedSession.json.user.id);
   const changedEstimate=await call(one,`/api/data/leads/${leadId}`,{method:'PATCH',body:{estimated_value:1250.75}});
   assert.equal(changedEstimate.json.error,null);assert.equal(changedEstimate.json.data.estimated_value,1250.75);
+  const editedDetails=await call(one,`/api/data/leads/${leadId}`,{method:'PATCH',body:{job_title:'Directora',source:'Referido'}});
+  assert.equal(editedDetails.json.error,null);assert.equal(editedDetails.json.data.job_title,'Directora');assert.equal(editedDetails.json.data.source,'Referido');
+  assert.equal((await call(admin,`/api/data/leads/${leadId}`,{method:'PATCH',body:{city:'Quito'}})).json.data.city,'Quito');
   assert.equal((await call(two,`/api/data/leads/${leadId}`,{method:'PATCH',body:{estimated_value:1}})).status,404);
   assert.ok((await call(one,`/api/data/leads/${leadId}`,{method:'PATCH',body:{estimated_value:-1}})).json.error);
   const noValue=await call(one,`/api/data/leads/${leadId}`,{method:'PATCH',body:{status:'won'}});assert.ok(noValue.json.error);assert.equal((await call(one,'/api/data/leads')).json.data[0].status,'new');
@@ -130,6 +133,11 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   await call(admin,`/api/data/leads/${workflowId}`,{method:'PATCH',body:{owner_id:twoId}});
   work=(await call(two,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;
   assert.equal(work.followups.find(f=>f.id===next.id).owner_id,twoId);assert.equal(work.activities.find(a=>a.lead_id===workflowId&&a.subject==='Llamar a Stephanie').created_by,oneId);
+  assert.equal((await call(two,`/api/data/followups/${next.id}`,{method:'PATCH',body:{description:'Revisar propuesta',due_at:'2026-10-09T10:00:00-05:00'}})).json.error,null);
+  work=(await call(two,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;
+  assert.equal(work.leads.find(l=>l.id===workflowId).next_action,'Revisar propuesta');
+  assert.equal(work.leads.find(l=>l.id===workflowId).next_action_at,'2026-10-09T15:00:00.000Z');
+  assert.equal((await call(admin,`/api/data/followups/${next.id}`,{method:'PATCH',body:{description:'Enviar propuesta',due_at:'2026-10-07T09:00:00-05:00'}})).json.error,null);
   assert.equal((await call(one,'/api/rpc/workspace',{method:'POST',body:{}})).json.data.leads.some(l=>l.id===workflowId),false);
   const proposal=await call(two,'/api/data/activities',{method:'POST',body:{lead_id:workflowId,type:'proposal',subject:'Propuesta enviada'}});assert.equal(proposal.json.error,null);
   assert.equal((await call(two,'/api/rpc/workspace',{method:'POST',body:{}})).json.data.leads.find(l=>l.id===workflowId).status,'proposal_sent');

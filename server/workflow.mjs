@@ -6,7 +6,8 @@ export const now=()=>new Date().toISOString();
 export const amount=value=>cents(value)/100;
 const commissionExemptOwner=ownerId=>{
  const owner=db.prepare('SELECT full_name FROM users WHERE id=?').get(ownerId);
- return owner?.full_name.normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().replace(/\s+/g,' ').toLowerCase()==='jose guerrero';
+ const name=owner?.full_name.normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().replace(/\s+/g,' ').toLowerCase();
+ return name==='jose guerrero'||name==='jose ignacio guerrero';
 };
 export function validDate(value){if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2}))?$/.test(value)||!Number.isFinite(Date.parse(value)))throw new Error('Fecha inválida. Usa fecha y hora de Ecuador.');const day=value.slice(0,10),check=new Date(`${day}T12:00:00Z`);if(check.toISOString().slice(0,10)!==day)throw new Error('La fecha no existe.');return value.length===10?`${value}T12:00:00-05:00`:new Date(value).toISOString();}
 export const audit=(id,before,after,actor)=>db.prepare('INSERT INTO lead_audit_log(id,lead_id,actor_id,operation,before_data,after_data) VALUES(?,?,?,?,?,?)').run(uid(),id,actor,before?'UPDATE':'INSERT',before?JSON.stringify(before):null,JSON.stringify(after));
