@@ -150,7 +150,10 @@ app.get('/api/data/:name', requireAuth, (req,res) => {
     const {clauses,vals}=filtersFrom(req,spec);
     if (name==='leads' && req.user.role!=='admin') {clauses.push('owner_id=?','deleted_at IS NULL');vals.push(req.user.id);}
     if (name==='profiles' && req.user.role!=='admin') clauses.push("role='sales' AND is_active=1");
-    if (name==='commissions' && req.user.role!=='admin') {clauses.push('owner_id=?');vals.push(req.user.id);}
+    if(name==='commissions'){
+      clauses.push('sale_id IN (SELECT id FROM sales WHERE commission_exempt=0)');
+      if(req.user.role!=='admin'){clauses.push('owner_id=?');vals.push(req.user.id);}
+    }
     if(['sales','activities','followups','lead_audit_log','lead_status_history'].includes(name)&&req.user.role!=='admin'){clauses.push(`lead_id IN (SELECT id FROM leads WHERE owner_id=?${name==='sales'?'':' AND deleted_at IS NULL'})`);vals.push(req.user.id);}
     if(name==='payments'&&req.user.role!=='admin'){clauses.push('sale_id IN (SELECT s.id FROM sales s JOIN leads l ON l.id=s.lead_id WHERE l.owner_id=?)');vals.push(req.user.id);}
     const order=String(req.query.order||'').match(/^([a-z_]+):(asc|desc)$/i); const orderSql=order&&spec.cols.includes(order[1])?` ORDER BY ${order[1]} ${order[2].toUpperCase()}`:'';
@@ -188,7 +191,7 @@ app.post('/api/rpc/:name', requireAuth, (req,res) => {
         const allLeads=db.prepare(`SELECT * FROM leads${admin?'':' WHERE owner_id=? AND deleted_at IS NULL'} ORDER BY updated_at DESC`).all(...params).map(x=>({...x,profiles:peopleMap.get(x.owner_id),services:serviceMap.get(x.service_id)||null}));
         const sales=db.prepare(`SELECT s.*,l.owner_id,l.status,l.company_name,COALESCE((SELECT SUM(ROUND(p.amount*100)) FROM payments p WHERE p.sale_id=s.id AND p.status='confirmed'),0)/100.0 AS collected_amount,s.total_value-COALESCE((SELECT SUM(ROUND(p.amount*100)) FROM payments p WHERE p.sale_id=s.id AND p.status='confirmed'),0)/100.0 AS pending_balance FROM sales s JOIN leads l ON l.id=s.lead_id${admin?'':' WHERE l.owner_id=?'}`).all(...params).map(x=>relationSelect('sales',x));
         const payments=db.prepare(`SELECT p.* FROM payments p JOIN sales s ON s.id=p.sale_id JOIN leads l ON l.id=s.lead_id${admin?'':' WHERE l.owner_id=?'} ORDER BY p.paid_at DESC`).all(...params).map(x=>relationSelect('payments',x));
-        const commissions=db.prepare(`SELECT c.*,s.lead_id,s.total_value,l.company_name,COALESCE((SELECT SUM(ROUND(p.amount*100)) FROM payments p WHERE p.sale_id=s.id AND p.status='confirmed'),0)/100.0 AS collected_amount,ROUND(COALESCE((SELECT SUM(ROUND(p.amount*100)) FROM payments p WHERE p.sale_id=s.id AND p.status='confirmed'),0)*c.rate)/100.0 AS generated_amount FROM commissions c JOIN sales s ON s.id=c.sale_id JOIN leads l ON l.id=s.lead_id${admin?'':' WHERE c.owner_id=?'}`).all(...params).map(x=>relationSelect('commissions',x));
+        const commissions=db.prepare(`SELECT c.*,s.lead_id,s.total_value,l.company_name,COALESCE((SELECT SUM(ROUND(p.amount*100)) FROM payments p WHERE p.sale_id=s.id AND p.status='confirmed'),0)/100.0 AS collected_amount,ROUND(COALESCE((SELECT SUM(ROUND(p.amount*100)) FROM payments p WHERE p.sale_id=s.id AND p.status='confirmed'),0)*c.rate)/100.0 AS generated_amount FROM commissions c JOIN sales s ON s.id=c.sale_id JOIN leads l ON l.id=s.lead_id WHERE s.commission_exempt=0${admin?'':' AND c.owner_id=?'}`).all(...params).map(x=>relationSelect('commissions',x));
         const followups=db.prepare(`SELECT f.* FROM followups f JOIN leads l ON l.id=f.lead_id WHERE l.deleted_at IS NULL${admin?'':' AND l.owner_id=?'} ORDER BY f.due_at`).all(...params);
         const activities=db.prepare(`SELECT a.* FROM activities a JOIN leads l ON l.id=a.lead_id WHERE l.deleted_at IS NULL${admin?'':' AND l.owner_id=?'} ORDER BY a.occurred_at DESC LIMIT 400`).all(...params).map(x=>({...x,profiles:peopleMap.get(x.created_by)}));
         const users=admin?db.prepare('SELECT id,email,full_name,phone,role,is_active,created_at FROM users').all().map(x=>relationSelect('profiles',x)):people.filter(x=>x.is_active&&x.role==='sales').map(x=>relationSelect('profiles',x));
@@ -256,6 +259,7 @@ app.patch('/api/data/:name/:id', requireAuth, (req,res) => {
     if(name==='payments'){if(req.user.role!=='admin')return err(res,403,'Solo administración puede confirmar o cancelar cobros.');const status=req.body.status;if(status==='cancelled')return err(res,400,'Usa Anular cobro con un motivo obligatorio.');if(!['confirmed','cancelled'].includes(status)||row.status==='cancelled')return err(res,400,'Estado de cobro inválido.');const updated=db.transaction(()=>{if(status===row.status)return row;db.prepare('UPDATE payments SET status=?,confirmed_by=?,confirmed_at=? WHERE id=?').run(status,status==='confirmed'?req.user.id:row.confirmed_by,status==='confirmed'?now():row.confirmed_at,row.id);recomputeSale(row.sale_id);const sale=db.prepare('SELECT lead_id FROM sales WHERE id=?').get(row.sale_id);activity(sale.lead_id,req.user.id,'payment',status==='confirmed'?'Cobro confirmado':'Cobro cancelado',`$${row.amount.toFixed(2)}`);audit(sale.lead_id,'UPDATE',{payment_id:row.id,status:row.status},{payment_id:row.id,status},req.user.id);return db.prepare('SELECT * FROM payments WHERE id=?').get(row.id);})();return res.json({data:updated,error:null});}
     if(['activities','lead_audit_log','lead_status_history','profiles'].includes(name))return err(res,403,'Este registro no se puede modificar.');
     if(name==='commissions'&&req.user.role!=='admin')return err(res,403,'Solo administración puede registrar pagos de comisión.');
+    if(name==='commissions'&&db.prepare('SELECT commission_exempt FROM sales WHERE id=?').get(row.sale_id)?.commission_exempt)return err(res,400,'Esta venta no genera comisión.');
     if(name==='sales'&&req.user.role!=='admin')return err(res,403,'Solo administración puede editar ventas.');
     if(name==='services'&&req.user.role!=='admin')return err(res,403,'Solo administración puede editar servicios.');
     const result=db.transaction(()=>{
@@ -316,7 +320,7 @@ app.get('/api/commissions/:id/detail',requireAuth,(req,res)=>{
 });
 app.post('/api/admin/commissions/:id/payouts',requireAuth,requireAdmin,(req,res)=>{
  try{const result=db.transaction(()=>{
-  const c=db.prepare('SELECT * FROM commissions WHERE id=?').get(req.params.id);if(!c)throw new Error('Comisión no encontrada.');
+  const c=db.prepare('SELECT c.* FROM commissions c JOIN sales s ON s.id=c.sale_id WHERE c.id=? AND s.commission_exempt=0').get(req.params.id);if(!c)throw new Error('Comisión no encontrada.');
   const amount=money(req.body.amount),key=String(req.body.request_key||'');
   if(!Number.isSafeInteger(centsSafe(amount))||amount<=0||!key||key.length>100)throw new Error('Indica un importe válido y una referencia de solicitud.');
   const old=db.prepare('SELECT * FROM commission_payouts WHERE request_key=?').get(key);

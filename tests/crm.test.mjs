@@ -222,9 +222,17 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   assert.equal(joseSale.commission_exempt,true);
   assert.equal(joseWorkspace.commissions.some(c=>c.sale_id===joseSale.id),false);
   const josePayment=(await call(admin,'/api/data/payments',{method:'POST',body:{sale_id:joseSale.id,amount:400,paid_at:'2026-10-15'}})).json.data[0];
+  const generatedBeforeLegacy=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data.finance.generated;
+  const legacyCommissionId=randomUUID(),legacyDb=new Database(env.DATABASE_PATH);
+  legacyDb.prepare('INSERT INTO commissions(id,sale_id,owner_id,rate,generated_amount) VALUES(?,?,?,?,?)').run(legacyCommissionId,joseSale.id,joseSale.owner_id,0.4,160);
+  legacyDb.close();
   joseWorkspace=(await call(jose,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;
   assert.equal(joseWorkspace.sales.find(s=>s.id===joseSale.id).collected_amount,400);
   assert.equal(joseWorkspace.commissions.some(c=>c.sale_id===joseSale.id),false);
+  assert.equal((await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data.finance.generated,generatedBeforeLegacy);
+  assert.equal((await call(admin,'/api/data/commissions')).json.data.some(c=>c.id===legacyCommissionId),false);
+  assert.ok((await call(admin,`/api/data/commissions/${legacyCommissionId}`,{method:'PATCH',body:{paid_amount:160}})).json.error);
+  assert.equal((await call(admin,`/api/admin/commissions/${legacyCommissionId}/payouts`,{method:'POST',body:{amount:160,request_key:'jose-exempt'}})).status,400);
   assert.equal((await call(admin,`/api/data/sales/${joseSale.id}`,{method:'PATCH',body:{total_value:1000}})).json.data.pending_balance,600);
   assert.equal((await call(admin,'/api/rpc/financial_review',{method:'POST',body:{}})).json.data.inconsistencies.some(x=>x.sale_id===joseSale.id),false);
   assert.equal((await call(admin,`/api/admin/payments/${josePayment.id}/void`,{method:'POST',body:{reason:'Prueba de anulación',confirm:true}})).status,200);
