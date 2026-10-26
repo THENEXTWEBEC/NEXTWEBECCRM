@@ -62,7 +62,7 @@ const err = (res, status, message) => res.status(status).json({ error: { message
 const requireAuth = (req, res, next) => {
   const user = req.session.user;
   if (!user) return err(res, 401, 'Inicia sesión para continuar.');
-  const current = db.prepare('SELECT id,email,full_name,phone,role,is_active,created_at FROM users WHERE id=?').get(user.id);
+  const current = db.prepare('SELECT id,email,full_name,phone,role,is_active,commission_enabled,commission_rate,must_change_password,last_login_at,created_at FROM users WHERE id=?').get(user.id);
   if (!current || !current.is_active) { req.session.destroy(() => {}); return err(res, 401, 'La cuenta está inactiva.'); }
   req.user = current; next();
 };
@@ -85,7 +85,7 @@ app.get('/api/health', (_req, res) => {
 app.get('/api/auth/session', (req,res) => {
   if(process.env.LOG_LEVEL==='debug')console.info('Auth session handler');
   if (!req.session.user) return res.json({ user: null });
-  const user = db.prepare('SELECT id,email,full_name,phone,role,is_active,created_at FROM users WHERE id=? AND is_active=1').get(req.session.user.id);
+  const user = db.prepare('SELECT id,email,full_name,phone,role,is_active,commission_enabled,commission_rate,must_change_password,last_login_at,created_at FROM users WHERE id=? AND is_active=1').get(req.session.user.id);
   if (!user) { req.session.destroy(() => {}); return res.json({ user: null }); }
   res.json({ user });
 });
@@ -94,12 +94,22 @@ app.post('/api/auth/login', async (req,res) => {
   if (!email || password.length > 200) return err(res, 400, 'Correo o contraseña inválidos.');
   const user = db.prepare('SELECT * FROM users WHERE email=? COLLATE NOCASE').get(email);
   if (!user || !user.is_active || !(await bcrypt.compare(password, user.password_hash))) return err(res, 401, 'Correo o contraseña incorrectos.');
+  db.prepare('UPDATE users SET last_login_at=? WHERE id=?').run(now(),user.id);
   req.session.regenerate(e => { if (e) return err(res,500,'No se pudo iniciar sesión.'); req.session.user={id:user.id}; req.session.save(error=>error?err(res,500,'No se pudo guardar la sesión.'):res.json({user:{id:user.id,email:user.email}})); });
 });
 app.post('/api/auth/logout', (req,res) => req.session.destroy(() => { res.clearCookie('nextwebec.sid', { httpOnly:true, sameSite:'lax', secure:production }); res.json({ok:true}); }));
+app.post('/api/auth/password',requireAuth,async(req,res)=>{
+  const current=String(req.body?.current_password||''),password=String(req.body?.new_password||'');
+  if(password.length<12||password.length>200)return err(res,400,'La nueva contraseña debe tener al menos 12 caracteres.');
+  const user=db.prepare('SELECT password_hash FROM users WHERE id=?').get(req.user.id);
+  if(!current||!(await bcrypt.compare(current,user.password_hash)))return err(res,400,'La contraseña actual no es correcta.');
+  const hash=await bcrypt.hash(password,12);
+  db.prepare('UPDATE users SET password_hash=?,must_change_password=0,updated_at=? WHERE id=?').run(hash,now(),req.user.id);
+  res.json({ok:true});
+});
 
 const specs = {
- profiles: { table:'users', cols:['id','email','full_name','phone','role','is_active','created_at'], editable:[], insert:[] },
+ profiles: { table:'users', cols:['id','email','full_name','phone','role','is_active','commission_enabled','commission_rate','must_change_password','last_login_at','created_at'], editable:[], insert:[] },
  services: { table:'services', cols:['id','name','default_price','is_active','created_at','updated_at'], editable:['name','default_price','is_active'], insert:['name','default_price'] },
  leads: { table:'leads', cols:['id','company_name','contact_name','job_title','phone','whatsapp','email','website','city','country','service_id','estimated_value','source','lead_origin','status','priority','owner_id','original_owner_id','created_by','updated_by','created_at','updated_at','last_contact_at','next_action','next_action_at','notes','loss_reason','deleted_at','deleted_by'], editable:['company_name','contact_name','job_title','phone','whatsapp','email','website','city','country','service_id','estimated_value','source','lead_origin','status','priority','next_action','next_action_at','notes','loss_reason','owner_id','deleted_at'], insert:['lead_id','type','subject','body','due_at'] },
  activities: { table:'activities', cols:['id','lead_id','created_by','type','subject','body','result','occurred_at','due_at','completed_at'], editable:[], insert:['lead_id','type','subject','body','due_at'] },
@@ -116,7 +126,7 @@ const relationSelect = (table, row) => {
   if (table==='sales') return {...row,total_value:Number(row.total_value),collected_amount:Number(row.collected_amount),pending_balance:Number(row.pending_balance),commission_exempt:Boolean(row.commission_exempt)};
   if (table==='payments') return {...row,amount:Number(row.amount)};
   if (table==='commissions') return {...row,executive_id:row.owner_id,generated_amount:Number(row.generated_amount),paid_amount:Number(row.paid_amount),pending_amount:Number(row.generated_amount-row.paid_amount)};
-  if (table==='profiles') return {...row, role:row.role==='sales'?'executive':row.role, is_active:Boolean(row.is_active)};
+  if (table==='profiles') return {...row, role:row.role==='sales'?'executive':row.role, is_active:Boolean(row.is_active),commission_enabled:Boolean(row.commission_enabled),commission_rate:row.commission_rate==null?null:Number(row.commission_rate),must_change_password:Boolean(row.must_change_password)};
   if (table==='services') return {...row,default_price:Number(row.default_price),is_active:Boolean(row.is_active)};
   if (table==='lead_audit_log') return {...row,before_data:row.before_data?JSON.parse(row.before_data):null,after_data:row.after_data?JSON.parse(row.after_data):null};
   return row;
@@ -194,7 +204,7 @@ app.post('/api/rpc/:name', requireAuth, (req,res) => {
         const commissions=db.prepare(`SELECT c.*,s.lead_id,s.total_value,l.company_name,COALESCE((SELECT SUM(ROUND(p.amount*100)) FROM payments p WHERE p.sale_id=s.id AND p.status='confirmed'),0)/100.0 AS collected_amount,ROUND(COALESCE((SELECT SUM(ROUND(p.amount*100)) FROM payments p WHERE p.sale_id=s.id AND p.status='confirmed'),0)*c.rate)/100.0 AS generated_amount FROM commissions c JOIN sales s ON s.id=c.sale_id JOIN leads l ON l.id=s.lead_id WHERE s.commission_exempt=0${admin?'':' AND c.owner_id=?'}`).all(...params).map(x=>relationSelect('commissions',x));
         const followups=db.prepare(`SELECT f.* FROM followups f JOIN leads l ON l.id=f.lead_id WHERE l.deleted_at IS NULL${admin?'':' AND l.owner_id=?'} ORDER BY f.due_at`).all(...params);
         const activities=db.prepare(`SELECT a.* FROM activities a JOIN leads l ON l.id=a.lead_id WHERE l.deleted_at IS NULL${admin?'':' AND l.owner_id=?'} ORDER BY a.occurred_at DESC LIMIT 400`).all(...params).map(x=>({...x,profiles:peopleMap.get(x.created_by)}));
-        const users=admin?db.prepare('SELECT id,email,full_name,phone,role,is_active,created_at FROM users').all().map(x=>relationSelect('profiles',x)):people.filter(x=>x.is_active&&x.role==='sales').map(x=>relationSelect('profiles',x));
+        const users=admin?db.prepare(`SELECT ${specs.profiles.cols.join(',')} FROM users`).all().map(x=>relationSelect('profiles',x)):people.filter(x=>x.is_active&&x.role==='sales').map(x=>relationSelect('profiles',x));
         return {leads:allLeads.filter(x=>!x.deleted_at),archived:admin?allLeads.filter(x=>x.deleted_at):[],services,profiles:users,profileNames:people.map(({id,full_name})=>({id,full_name})),sales,payments,commissions,followups,activities,finance:financialSummary(req.user),commission_rate:Number(db.prepare("SELECT value FROM settings WHERE key='commission_rate'").get().value)};
       })();return res.json({data,error:null});
     }
@@ -354,12 +364,47 @@ for(const kind of ['payments','commission-payouts'])app.post(`/api/admin/${kind}
 
 app.post('/api/admin/users',requireAuth,requireAdmin,async(req,res)=>{
   const name=String(req.body?.full_name||'').trim().replace(/\s+/g,' '), email=normalizeEmail(req.body?.email), password=String(req.body?.password||''), phone=String(req.body?.phone||'').trim();
+  const enabled=req.body?.commission_enabled!==false,rate=req.body?.commission_rate==null?null:Number(req.body.commission_rate);
   if(name.length<2||name.length>120||!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||password.length<12||password.length>200)return err(res,400,'Completa nombre, correo y una contraseña de al menos 12 caracteres.');
-  try{const hash=await bcrypt.hash(password,12);db.prepare("INSERT INTO users(id,email,password_hash,full_name,phone,role) VALUES(?,?,?,?,?,'sales')").run(uid(),email,hash,name,phone||null);res.status(201).json({ok:true});}catch(e){res.status(409).json({error:{message:e.code==='SQLITE_CONSTRAINT_UNIQUE'?'Ese correo ya está registrado.':'No se pudo crear la cuenta.'}});}
+  if(rate!=null&&(!Number.isFinite(rate)||rate<0||rate>1))return err(res,400,'El porcentaje de comisión debe estar entre 0 y 100.');
+  try{const hash=await bcrypt.hash(password,12);const id=uid();db.prepare("INSERT INTO users(id,email,password_hash,full_name,phone,role,commission_enabled,commission_rate,must_change_password) VALUES(?,?,?,?,?,'sales',?,?,1)").run(id,email,hash,name,phone||null,enabled?1:0,rate);res.status(201).json({ok:true,id});}catch(e){res.status(409).json({error:{message:e.code==='SQLITE_CONSTRAINT_UNIQUE'?'Ese correo ya está registrado.':'No se pudo crear la cuenta.'}});}
 });
 app.patch('/api/admin/users/:id',requireAuth,requireAdmin,(req,res)=>{
-  const target=db.prepare('SELECT id,role,is_active FROM users WHERE id=?').get(req.params.id);if(!target||target.role!=='sales'||target.id===req.user.id)return err(res,404,'Colaborador no encontrado.');
-  const active=Boolean(req.body?.is_active);db.prepare('UPDATE users SET is_active=?,updated_at=? WHERE id=?').run(active?1:0,now(),target.id);res.json({ok:true,is_active:active});
+  const target=db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);if(!target||target.role!=='sales'||target.id===req.user.id)return err(res,404,'Colaborador no encontrado.');
+  const updates={};
+  if(Object.hasOwn(req.body,'full_name')){const name=String(req.body.full_name||'').trim().replace(/\s+/g,' ');if(name.length<2||name.length>120)return err(res,400,'El nombre debe tener entre 2 y 120 caracteres.');updates.full_name=name;}
+  if(Object.hasOwn(req.body,'email')){const email=normalizeEmail(req.body.email);if(!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return err(res,400,'Ingresa un correo válido.');updates.email=email;}
+  if(Object.hasOwn(req.body,'phone'))updates.phone=String(req.body.phone||'').trim().slice(0,40)||null;
+  if(Object.hasOwn(req.body,'is_active'))updates.is_active=req.body.is_active?1:0;
+  if(Object.hasOwn(req.body,'commission_enabled'))updates.commission_enabled=req.body.commission_enabled?1:0;
+  if(Object.hasOwn(req.body,'commission_rate')){const rate=req.body.commission_rate==null||req.body.commission_rate===''?null:Number(req.body.commission_rate);if(rate!=null&&(!Number.isFinite(rate)||rate<0||rate>1))return err(res,400,'El porcentaje de comisión debe estar entre 0 y 100.');updates.commission_rate=rate;}
+  if(!Object.keys(updates).length)return err(res,400,'No hay cambios para guardar.');
+  updates.updated_at=now();
+  try{db.prepare(`UPDATE users SET ${Object.keys(updates).map(k=>`${k}=@${k}`).join(',')} WHERE id=@id`).run({...updates,id:target.id});res.json({data:relationSelect('profiles',db.prepare(`SELECT ${specs.profiles.cols.join(',')} FROM users WHERE id=?`).get(target.id)),error:null});}catch(e){return err(res,409,e.code==='SQLITE_CONSTRAINT_UNIQUE'?'Ese correo ya está registrado.':'No se pudo actualizar la cuenta.');}
+});
+app.post('/api/admin/users/:id/reset-password',requireAuth,requireAdmin,async(req,res)=>{
+  const target=db.prepare("SELECT id FROM users WHERE id=? AND role='sales'").get(req.params.id),password=String(req.body?.password||'');
+  if(!target)return err(res,404,'Colaborador no encontrado.');
+  if(password.length<12||password.length>200)return err(res,400,'La contraseña temporal debe tener al menos 12 caracteres.');
+  const hash=await bcrypt.hash(password,12);
+  db.transaction(()=>{db.prepare('UPDATE users SET password_hash=?,must_change_password=1,updated_at=? WHERE id=?').run(hash,now(),target.id);db.prepare('DELETE FROM sessions WHERE data LIKE ?').run(`%\"id\":\"${target.id}\"%`);})();
+  res.json({ok:true});
+});
+app.post('/api/admin/sales/:id/reopen',requireAuth,requireAdmin,(req,res)=>{
+  const reason=String(req.body?.reason||'').trim();
+  if(reason.length<3||reason.length>1000||req.body?.confirm!==true)return err(res,400,'Confirma la reapertura e indica un motivo de 3 a 1000 caracteres.');
+  try{const data=db.transaction(()=>{
+    const sale=db.prepare('SELECT * FROM sales WHERE id=?').get(req.params.id);if(!sale)throw new Error('Venta no encontrada.');
+    const lead=db.prepare('SELECT * FROM leads WHERE id=?').get(sale.lead_id);if(!lead)throw new Error('Oportunidad no encontrada.');
+    const commission=db.prepare('SELECT * FROM commissions WHERE sale_id=?').get(sale.id);
+    if(db.prepare("SELECT 1 FROM payments WHERE sale_id=? AND status!='cancelled'").get(sale.id)||commission?.paid_amount>0||commission&&db.prepare('SELECT 1 FROM commission_payouts WHERE commission_id=? AND voided_at IS NULL').get(commission.id))throw new Error('Anula primero los cobros y pagos de comisión activos.');
+    const snapshot={action:'sale_reopened',reason,sale,commission,payments:db.prepare('SELECT * FROM payments WHERE sale_id=?').all(sale.id),payouts:commission?db.prepare('SELECT * FROM commission_payouts WHERE commission_id=?').all(commission.id):[]};
+    db.prepare('INSERT INTO financial_archive VALUES(?,?,?,?,?)').run(uid(),lead.id,JSON.stringify(snapshot),req.user.id,now());
+    if(commission)db.prepare('DELETE FROM commission_payouts WHERE commission_id=?').run(commission.id);
+    db.prepare('DELETE FROM commissions WHERE sale_id=?').run(sale.id);db.prepare('DELETE FROM payments WHERE sale_id=?').run(sale.id);db.prepare('DELETE FROM sales WHERE id=?').run(sale.id);
+    const timestamp=now();db.prepare("UPDATE leads SET status='negotiation',updated_by=?,updated_at=? WHERE id=?").run(req.user.id,timestamp,lead.id);db.prepare("INSERT INTO lead_status_history(id,lead_id,old_status,new_status,actor_id) VALUES(?,?,?,'negotiation',?)").run(uid(),lead.id,lead.status,req.user.id);audit(lead.id,'UPDATE',lead,{...lead,status:'negotiation',sale_reopened:true,reason},req.user.id);
+    return {lead_id:lead.id,status:'negotiation'};
+  })();res.json({data,error:null});}catch(e){return err(res,400,safeError(e));}
 });
 app.get('/api/admin/leads/:id/deletion-preview',requireAuth,requireAdmin,(req,res)=>{
  const lead=db.prepare('SELECT id,company_name,deleted_at FROM leads WHERE id=?').get(req.params.id);

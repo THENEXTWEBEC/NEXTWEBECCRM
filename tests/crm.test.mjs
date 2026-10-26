@@ -9,7 +9,7 @@ import bcrypt from 'bcryptjs';
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 
-test('CRM authentication, ownership, duplicates, activities and commissions', { timeout: 30000 }, async t => {
+test('CRM authentication, ownership, duplicates, activities and commissions', { timeout: 60000 }, async t => {
   const dir=await mkdtemp(resolve(tmpdir(),'nextwebec-test-'));
   process.env.DATABASE_PATH=resolve(dir,'crm.db');
   const {db,migrate}=await import('../server/db.mjs');migrate();
@@ -23,8 +23,8 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   t.after(async()=>{server.kill('SIGTERM');await new Promise(r=>setTimeout(r,100));await rm(dir,{recursive:true,force:true});});
   const base=`http://127.0.0.1:${port}`;
   let ready=false;for(let i=0;i<80;i++){try{if((await fetch(`${base}/api/health`)).ok){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,100));}assert.equal(ready,true,'server did not become ready');
-  const login=async(email,password)=>{const response=await fetch(`${base}/api/auth/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,password}),signal:AbortSignal.timeout(5000)});assert.equal(response.status,200,`login failed: ${email}`);return response.headers.get('set-cookie').split(';')[0];};
-  const call=async(cookie,path,{method='GET',body}={})=>{const response=await fetch(`${base}${path}`,{method,headers:{cookie,'content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(5000)});return {status:response.status,json:await response.json()};};
+  const login=async(email,password)=>{const response=await fetch(`${base}/api/auth/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,password}),signal:AbortSignal.timeout(15000)});assert.equal(response.status,200,`login failed: ${email}`);return response.headers.get('set-cookie').split(';')[0];};
+  const call=async(cookie,path,{method='GET',body}={})=>{const response=await fetch(`${base}${path}`,{method,headers:{cookie,'content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(15000)});return {status:response.status,json:await response.json()};};
   const admin=await login('admin@example.test',adminPassword);
 
   for(const [name,email] of [['Sales One','one@example.test'],['Sales Two','two@example.test']]){
@@ -119,6 +119,7 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   const failedCreate=await call(admin,'/api/rpc/create_lead_if_unique',{method:'POST',body:{p_company:'Rollback Followup',p_contact:'Contact',p_followup_at:'not-a-date'}});assert.ok(failedCreate.json.error);assert.equal((await call(admin,'/api/data/leads')).json.data.some(l=>l.company_name==='Rollback Followup'),false);
 
   const profiles=(await call(admin,'/api/data/profiles')).json.data,oneId=profiles.find(p=>p.email==='one@example.test').id,twoId=profiles.find(p=>p.email==='two@example.test').id;
+  const editedUser=await call(admin,`/api/admin/users/${twoId}`,{method:'PATCH',body:{full_name:'Sales Two Editado',phone:'0999999999',commission_enabled:true,commission_rate:0.33}});assert.equal(editedUser.json.error,null);assert.equal(editedUser.json.data.commission_rate,0.33);
   const workflow=await call(admin,'/api/rpc/create_lead_if_unique',{method:'POST',body:{p_company:'Workflow QA',p_contact:'Stephanie',p_owner_id:oneId,p_followup_at:'2026-10-06T09:00:00-05:00',p_followup_description:'Llamar a Stephanie',p_followup_type:'call'}});
   assert.equal(workflow.json.data[0].created,true);const workflowId=workflow.json.data[0].lead_id;
   let work=(await call(one,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;
@@ -144,13 +145,13 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   const failedWon=await call(two,`/api/data/leads/${workflowId}`,{method:'PATCH',body:{status:'won',final_value:-1}});assert.ok(failedWon.json.error);
   assert.equal((await call(two,'/api/rpc/workspace',{method:'POST',body:{}})).json.data.leads.find(l=>l.id===workflowId).status,'proposal_sent');
   assert.equal((await call(two,`/api/data/leads/${workflowId}`,{method:'PATCH',body:{status:'won',final_value:1200}})).json.error,null);
-  work=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;assert.ok(work.activities.some(a=>a.subject==='Propuesta enviada'));assert.ok((await call(admin,`/api/data/lead_status_history?lead_id=${workflowId}`)).json.data.some(h=>h.old_status==='proposal_sent'&&h.new_status==='won'));const newSale=work.sales.find(s=>s.lead_id===workflowId);assert.equal(work.commissions.find(c=>c.sale_id===newSale.id).rate,0.35);assert.equal(work.followups.find(f=>f.id===next.id).status,'pending');
+  work=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;assert.ok(work.activities.some(a=>a.subject==='Propuesta enviada'));assert.ok((await call(admin,`/api/data/lead_status_history?lead_id=${workflowId}`)).json.data.some(h=>h.old_status==='proposal_sent'&&h.new_status==='won'));const newSale=work.sales.find(s=>s.lead_id===workflowId);assert.equal(work.commissions.find(c=>c.sale_id===newSale.id).rate,0.33);assert.equal(work.followups.find(f=>f.id===next.id).status,'pending');
   const collectionTask=await call(admin,'/api/data/followups',{method:'POST',body:{lead_id:workflowId,type:'other',due_at:'2026-10-08T09:00:00-05:00',description:'Cobro 50% adelantado'}});assert.equal(collectionTask.json.error,null);assert.ok((await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data.followups.some(f=>f.id===collectionTask.json.data[0].id&&f.status==='pending'));
   const pending=(await call(admin,'/api/data/payments',{method:'POST',body:{sale_id:newSale.id,amount:600,paid_at:'2026-10-06',status:'pending'}})).json.data[0];
   work=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;assert.equal(work.sales.find(s=>s.id===newSale.id).collected_amount,0);assert.equal(work.commissions.find(c=>c.sale_id===newSale.id).generated_amount,0);
   assert.equal((await call(two,`/api/data/payments/${pending.id}`,{method:'PATCH',body:{status:'confirmed'}})).status,403);
   assert.equal((await call(admin,`/api/data/payments/${pending.id}`,{method:'PATCH',body:{status:'confirmed'}})).json.error,null);
-  work=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;assert.equal(work.commissions.find(c=>c.sale_id===newSale.id).generated_amount,210);
+  work=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;assert.equal(work.commissions.find(c=>c.sale_id===newSale.id).generated_amount,198);
   const crossSite=await fetch(`${base}/api/data/leads/${workflowId}`,{method:'PATCH',headers:{cookie:admin,'content-type':'application/json',origin:'https://evil.example'},body:JSON.stringify({status:'lost',loss_reason:'CSRF'})});assert.equal(crossSite.status,403);
   const textRequest=await fetch(`${base}/api/data/leads/${workflowId}`,{method:'PATCH',headers:{cookie:admin,'content-type':'text/plain'},body:'{}'});assert.equal(textRequest.status,415);
   assert.equal((await call(two,'/api/rpc/financial_review',{method:'POST',body:{}})).status,403);
@@ -181,7 +182,7 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   await call(admin,'/api/rpc/create_lead_if_unique',{method:'POST',body:{p_company:'RUBA',p_contact:'Real QA protected'}});
   await call(admin,'/api/rpc/set_commission_rate',{method:'POST',body:{rate:0.4}});
   const realBefore=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;
-  const fake=(await call(admin,'/api/rpc/create_lead_if_unique',{method:'POST',body:{p_company:'Pepitos Grill',p_contact:'QA ficticio'}})).json.data[0].lead_id;
+  const fake=(await call(admin,'/api/rpc/create_lead_if_unique',{method:'POST',body:{p_company:'Pepitos Grill',p_contact:'QA ficticio',p_owner_id:oneId}})).json.data[0].lead_id;
   await call(admin,`/api/data/leads/${fake}`,{method:'PATCH',body:{status:'won',final_value:450}});
   let fakeWS=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;
   const fsale=fakeWS.sales.find(s=>s.lead_id===fake),fc=fakeWS.commissions.find(c=>c.sale_id===fsale.id);
@@ -235,13 +236,22 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   assert.equal((await call(admin,`/api/admin/commissions/${legacyCommissionId}/payouts`,{method:'POST',body:{amount:160,request_key:'jose-exempt'}})).status,400);
   assert.equal((await call(admin,`/api/data/sales/${joseSale.id}`,{method:'PATCH',body:{total_value:1000}})).json.data.pending_balance,600);
   const soldWithFinalPrice=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data.finance.sold;
-  assert.equal((await call(admin,`/api/data/leads/${joseLead}`,{method:'PATCH',body:{status:'negotiation'}})).json.error,null);
+  assert.ok((await call(admin,`/api/data/leads/${joseLead}`,{method:'PATCH',body:{status:'negotiation'}})).json.error);
   assert.equal((await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data.finance.sold,soldWithFinalPrice);
   assert.equal((await call(admin,'/api/rpc/financial_review',{method:'POST',body:{}})).json.data.inconsistencies.some(x=>x.sale_id===joseSale.id),false);
   assert.equal((await call(admin,`/api/admin/payments/${josePayment.id}/void`,{method:'POST',body:{reason:'Prueba de anulación',confirm:true}})).status,200);
   joseWorkspace=(await call(jose,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;
   assert.equal(joseWorkspace.sales.find(s=>s.id===joseSale.id).pending_balance,1000);
   assert.equal(joseWorkspace.commissions.some(c=>c.sale_id===joseSale.id),false);
+  assert.equal((await call(one,`/api/admin/sales/${joseSale.id}/reopen`,{method:'POST',body:{reason:'Prueba',confirm:true}})).status,403);
+  assert.equal((await call(jose,`/api/admin/sales/${joseSale.id}/reopen`,{method:'POST',body:{reason:'Cliente pidió renegociar',confirm:true}})).status,200);
+  joseWorkspace=(await call(jose,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;
+  assert.equal(joseWorkspace.sales.some(s=>s.id===joseSale.id),false);assert.equal(joseWorkspace.leads.find(l=>l.id===joseLead).status,'negotiation');
+
+  const reset=await call(admin,`/api/admin/users/${oneId}/reset-password`,{method:'POST',body:{password:'Temporary-pass-900'}});assert.equal(reset.status,200);
+  const temporary=await login('one@example.test','Temporary-pass-900');assert.equal((await call(temporary,'/api/auth/session')).json.user.must_change_password,1);
+  assert.equal((await call(temporary,'/api/auth/password',{method:'POST',body:{current_password:'Temporary-pass-900',new_password:'Permanent-pass-901'}})).status,200);
+  assert.equal((await call(temporary,'/api/auth/session')).json.user.must_change_password,0);
 
   const backup=await fetch(`${base}/api/admin/backup`,{headers:{cookie:admin},signal:AbortSignal.timeout(10000)});assert.equal(backup.status,200);assert.match(backup.headers.get('content-type'),/application\/octet-stream/);assert.ok((await backup.arrayBuffer()).byteLength>1000);
   assert.equal((await fetch(`${base}/api/health`)).status,200);

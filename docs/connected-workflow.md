@@ -11,16 +11,18 @@
 7. Administración paga comisiones desde la ficha o Comisiones; puede cambiar la tasa para ventas futuras desde Configuración.
 8. Archivar conserva todos los datos. Administración consulta y restaura en Archivados; una coincidencia fuerte con otro registro activo requiere revisión antes de restaurar.
 9. Administración puede eliminar desde Archivados, escribiendo el nombre de la empresa para confirmar. Solo se permite si no existen cobros ni movimientos de comisión. Se guarda un respaldo completo antes de eliminar; la operación borra la oportunidad y sus relaciones, incluida una venta sin cobros, y conserva una constancia administrativa de la eliminación. Comisiones y totales se actualizan inmediatamente.
+10. En **Equipo**, administración puede editar datos del colaborador, definir si genera comisión, asignar una tasa personal para ventas futuras y crear una contraseña temporal. El colaborador debe reemplazar esa contraseña al iniciar sesión.
 
 ## Definiciones y decisiones
 
 - **Valor estimado**: potencial del pipeline; no es una venta ni una factura. En el dashboard del ejecutivo, **Dinero proyectado** suma el valor estimado de sus oportunidades abiertas, incluidas propuestas y negociaciones; excluye ganadas, perdidas y archivadas. Actividad del equipo muestra el mismo cálculo en una columna por colaborador.
-- **Valor vendido**: suma de valores finales de oportunidades Ganadas; incluye ventas archivadas. Si una oportunidad se reabre, deja de aportar vendido hasta volver a Ganado; los cobros confirmados históricos permanecen.
+- **Valor vendido**: suma de valores finales de ventas registradas, incluidas las archivadas. Una venta no puede cambiar silenciosamente de etapa. Administración puede reabrirla cuando no tiene cobros ni pagos de comisión activos; el CRM conserva una copia financiera y devuelve la oportunidad a Negociación.
 - **Dinero cobrado**: suma de cobros confirmados.
 - **Saldo por cobrar**: saldo de ventas Ganadas, incluidas archivadas.
-- **Comisión generada**: cobros confirmados × tasa guardada para cada venta.
+- **Comisión generada**: cobros confirmados × tasa guardada para cada venta. Cada colaborador puede usar la tasa general, una tasa personal o quedar excluido de comisión. Las cuentas administradoras quedan excluidas.
 - **Comisión pagada**: pagos administrativos; comisión pendiente = generada − pagada.
 - **Reasignación**: mueve la oportunidad y tareas pendientes. No cambia autores históricos ni el beneficiario de una comisión ya creada.
+- **Por cobrar**: el dashboard administrativo muestra las ventas con saldo, responsable y siguiente seguimiento para facilitar la gestión de cobro.
 - **Estados**: Nuevo, Contactado, Respondió, Reunión agendada, Reunión realizada, Propuesta, Negociación, Ganado, Perdido. Perdido cancela tareas aún pendientes. Ganado conserva los seguimientos y permite programar nuevos, incluidos cobros; aparecen en Mi día y Seguimientos.
 - **Horarios**: America/Guayaquil (UTC−5). Una tarea 6 octubre 09:00 se guarda como 14:00 UTC y se presenta siempre a las 09:00 Ecuador.
 - **Abandono**: sin actividad comercial o 3, 7, 14+ días desde la última actividad; excluye ganado, perdido y archivado.
