@@ -21,6 +21,7 @@ test('Connected screens render consistent data, roles, pending tasks and Ecuador
  const ranking=context.qa.ranking();assert.match(ranking,/<span>Dinero proyectado<\/span>/);assert.match(ranking,/<span>\$2,000\.25<\/span>/);assert.doesNotMatch(ranking,/\$9,000\.00/);context.qa.seed(seed);
  context.qa.pipeline([lead]);assert.match(html,/Iceman/);assert.match(html,/Isabella/);
  context.qa.table([lead]);assert.match(html,/Archivados/);assert.match(html,/Exportar CSV/);
+ context.qa.seed({...seed,leads:[{...lead,status:'won',estimated_value:1200}],sales:[{id:'sale',lead_id:'lead',owner_id:'sales',total_value:1450,status:'won'}]});context.qa.table([{...lead,status:'won',estimated_value:1200}]);assert.match(html,/\$1,450\.00<span class="subtext">Final/);assert.doesNotMatch(html,/\$1,200\.00/);context.qa.pipeline([{...lead,status:'won',estimated_value:1200}]);assert.match(html,/\$1,450\.00 final/);context.qa.seed(seed);
  context.qa.settings();assert.match(html,/Comisión para nuevas ventas/);assert.match(html,/financial-review/);
  context.qa.archive();assert.match(html,/No hay oportunidades archivadas/);
  context.qa.seed({...seed,archivedLeads:[{...lead,deleted_at:'2026-10-05T14:00:00Z'}]});context.qa.archive();assert.match(html,/data-restore="lead"/);assert.match(html,/data-delete-archived="lead"/);
