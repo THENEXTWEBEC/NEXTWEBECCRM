@@ -234,6 +234,9 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   assert.ok((await call(admin,`/api/data/commissions/${legacyCommissionId}`,{method:'PATCH',body:{paid_amount:160}})).json.error);
   assert.equal((await call(admin,`/api/admin/commissions/${legacyCommissionId}/payouts`,{method:'POST',body:{amount:160,request_key:'jose-exempt'}})).status,400);
   assert.equal((await call(admin,`/api/data/sales/${joseSale.id}`,{method:'PATCH',body:{total_value:1000}})).json.data.pending_balance,600);
+  const soldWithFinalPrice=(await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data.finance.sold;
+  assert.equal((await call(admin,`/api/data/leads/${joseLead}`,{method:'PATCH',body:{status:'negotiation'}})).json.error,null);
+  assert.equal((await call(admin,'/api/rpc/workspace',{method:'POST',body:{}})).json.data.finance.sold,soldWithFinalPrice);
   assert.equal((await call(admin,'/api/rpc/financial_review',{method:'POST',body:{}})).json.data.inconsistencies.some(x=>x.sale_id===joseSale.id),false);
   assert.equal((await call(admin,`/api/admin/payments/${josePayment.id}/void`,{method:'POST',body:{reason:'Prueba de anulación',confirm:true}})).status,200);
   joseWorkspace=(await call(jose,'/api/rpc/workspace',{method:'POST',body:{}})).json.data;
