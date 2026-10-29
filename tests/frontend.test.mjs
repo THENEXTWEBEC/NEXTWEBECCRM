@@ -12,7 +12,7 @@ test('CRM hides team and commissions while preserving sales and followups',()=>{
  const sb={auth:{onAuthStateChange(){},getSession:()=>new Promise(()=>{})},from:()=>({})};
  const source=readFileSync('src/app.js','utf8').replace(/^import .*;\n/gm,'');
  const context=vm.createContext({...domain,document,sb,console,Intl,Date,setTimeout,clearTimeout,setInterval:()=>({unref(){}}),queueMicrotask,crypto:{randomUUID:()=> 'test-key'},window:{}});
- vm.runInContext(source+`\nglobalThis.qa={seed(data){({profile,leads,sales,payments,followups,finance,profiles,services,archivedLeads,activities}=data);profileNames=data.profileNames;},shell:renderShell,dashboard:renderDashboard,stats:dashboardStats,followups:renderFollowups,archive:renderArchived,pipeline:renderPipeline,table:renderOpportunities,settings:renderSettings,history:renderHistory};`,context);
+ vm.runInContext(source+`\nglobalThis.qa={seed(data){({profile,leads,sales,payments,followups,finance,profiles,services,archivedLeads,activities}=data);profileNames=data.profileNames;},shell:renderShell,dashboard:renderDashboard,stats:dashboardStats,followups:renderFollowups,archive:renderArchived,pipeline:renderPipeline,table:renderOpportunities,settings:renderSettings,clients:renderClients,history:renderHistory};`,context);
  const lead={id:'lead',company_name:'Iceman',contact_name:'Stephanie',status:'negotiation',owner_id:'sales',created_by:'admin',estimated_value:1200,created_at:'2026-10-01T14:00:00Z',updated_at:'2026-10-05T14:00:00Z',next_action:'Llamar a Stephanie',next_action_at:'2026-10-06T14:00:00Z'};
  const seed={profile:{id:'admin',role:'admin',full_name:'Admin'},leads:[lead],sales:[],payments:[],followups:[{id:'task',lead_id:'lead',owner_id:'sales',type:'call',status:'pending',description:'Llamar a Stephanie',due_at:'2026-10-06T14:00:00Z'}],finance:{sold:0,won:0,collected:0,balance:0,generated:100,paid:50,pending:50},profiles:[{id:'admin',role:'admin',full_name:'Admin',is_active:true}],profileNames:[{id:'admin',full_name:'Admin'},{id:'sales',full_name:'Isabella'}],services:[],archivedLeads:[],activities:[]};
  context.qa.seed(seed);context.qa.shell();
@@ -24,6 +24,7 @@ test('CRM hides team and commissions while preserving sales and followups',()=>{
  context.qa.followups();assert.match(html,/data-complete="task"/);
  context.qa.pipeline([lead]);assert.match(html,/Iceman/);assert.match(html,/Isabella/);
  context.qa.table([lead]);assert.match(html,/Responsable/);assert.match(html,/Exportar CSV/);
+ context.qa.clients();assert.match(html,/Crear cliente/);assert.match(html,/Vincular oportunidad/);assert.match(html,/Crea una ficha o vincula una oportunidad/);
  context.qa.settings();assert.match(html,/Revisión financiera/);assert.match(html,/financial-review/);assert.doesNotMatch(html,/Comisión|Cambiar tasa/);
  context.qa.archive();assert.match(html,/No hay oportunidades archivadas/);
  const stats=context.qa.stats([lead]);assert.match(stats,/Valor del pipeline/);assert.doesNotMatch(stats,/Comisión|Vendedores/);

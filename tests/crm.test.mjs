@@ -28,11 +28,20 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   const login=async(email,password)=>{const response=await fetch(`${base}/api/auth/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,password}),signal:AbortSignal.timeout(15000)});assert.equal(response.status,200,`login failed: ${email}`);return response.headers.get('set-cookie').split(';')[0];};
   const call=async(cookie,path,{method='GET',body}={})=>{const response=await fetch(`${base}${path}`,{method,headers:{cookie,'content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(15000)});return {status:response.status,json:await response.json()};};
   const admin=await login('admin@example.test',adminPassword);
+  const direct=await call(admin,'/api/platform/clients',{method:'POST',body:{display_name:'Cliente directo',legal_name:'Cliente Directo S.A.',tax_id:'0999999999001',email:'DIRECT@example.test',phone:'+593 99 999 9999'}});
+  assert.equal(direct.status,200,JSON.stringify(direct.json));
+  assert.equal(direct.json.data.email,'direct@example.test');
+  const directId=direct.json.data.id;
+  assert.equal((await call(admin,`/api/platform/clients/${directId}`)).json.data.leads.length,0,'a direct client needs no opportunity');
+  assert.equal((await call(admin,'/api/platform/overview')).json.data.clients.some(c=>c.id===directId),true);
+  assert.equal((await call(admin,'/api/platform/clients',{method:'POST',body:{display_name:'Otro nombre',tax_id:'0999999999001'}})).status,409);
+  assert.equal((await call(admin,'/api/platform/clients',{method:'POST',body:{display_name:'Cliente inválido',email:'correo-inválido'}})).status,400);
 
   for(const [name,email] of [['Sales One','one@example.test'],['Sales Two','two@example.test']]){
     const created=await call(admin,'/api/admin/users',{method:'POST',body:{full_name:name,email,password:'Sales-test-password-42'}});assert.equal(created.status,201);
   }
   const one=await login('one@example.test','Sales-test-password-42'), two=await login('two@example.test','Sales-test-password-42');
+  assert.equal((await call(one,'/api/platform/clients',{method:'POST',body:{display_name:'Sin permiso'}})).status,403);
 
   const create=await call(one,'/api/rpc/create_lead_if_unique',{method:'POST',body:{p_company:'Iceman',p_contact:'Pat Example',p_phone:'+593 99 123 4567',p_email:'PAT@example.test',p_website:'https://www.example.test/path',p_estimated_value:1000}});
   assert.equal(create.json.data[0].created,true);const leadId=create.json.data[0].lead_id;
