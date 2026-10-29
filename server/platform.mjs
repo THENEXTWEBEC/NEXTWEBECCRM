@@ -58,6 +58,28 @@ platform.get('/overview', wrap(req => {
   return { clients, links, quotes, projects };
 }));
 
+platform.post('/clients', wrap(req => {
+  if (req.user.role !== 'admin') throw fail('Solo administración puede crear clientes directamente.', 403);
+  return db.transaction(() => {
+    const displayName = text(req.body?.display_name);
+    if (displayName.length < 2) throw fail('Indica el nombre del cliente.');
+    const legalName = text(req.body?.legal_name || displayName);
+    if (legalName.length < 2) throw fail('Indica la razón social.');
+    const taxId = optional(req.body?.tax_id, 32)?.toUpperCase() || null;
+    const email = optional(req.body?.email, 254)?.toLowerCase() || null;
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw fail('Ingresa un correo válido.');
+    if (taxId && db.prepare('SELECT 1 FROM clients WHERE tax_id=?').get(taxId)) throw fail('Ya existe un cliente con esa identificación.', 409);
+    if (email && db.prepare('SELECT 1 FROM clients WHERE email=? COLLATE NOCASE').get(email)) throw fail('Ya existe un cliente con ese correo.', 409);
+    if (!taxId && !email && db.prepare('SELECT 1 FROM clients WHERE display_name=? COLLATE NOCASE').get(displayName)) throw fail('Ya existe un cliente con ese nombre.', 409);
+    const clientId = id(), at = stamp();
+    db.prepare('INSERT INTO clients(id,legal_name,display_name,tax_id,email,phone,owner_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run(clientId, legalName, displayName, taxId, email, optional(req.body?.phone, 40), req.user.id, at, at);
+    const client = db.prepare('SELECT * FROM clients WHERE id=?').get(clientId);
+    audit('client', clientId, 'create', req.user.id, null, client);
+    return client;
+  }).immediate();
+}));
+
 platform.post('/clients/from-lead', wrap(req => db.transaction(() => {
   const lead = db.prepare('SELECT * FROM leads WHERE id=?').get(req.body?.lead_id);
   if (!lead || !leadAccess(req.user, lead)) throw fail('Oportunidad no encontrada.', 404);
