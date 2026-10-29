@@ -9,6 +9,7 @@ import { resolve, dirname } from 'node:path';
 import { db, migrate, databasePath, verifyBackup } from './db.mjs';
 import { stages } from '../src/domain.js';
 import { validDate, activity, syncNext, createFollowup, saleFor, recomputeSale, setStage, financialSummary } from './workflow.mjs';
+import { platform } from './platform.mjs';
 
 migrate();
 const app = express();
@@ -77,6 +78,7 @@ app.use('/api', (req,res,next) => {
   }
   next();
 });
+app.use('/api/platform', requireAuth, platform);
 
 app.get('/api/health', (_req, res) => {
   try { db.prepare('SELECT 1').get(); res.json({ status: 'ok', database: 'connected' }); }
@@ -398,9 +400,10 @@ app.post('/api/admin/sales/:id/reopen',requireAuth,requireAdmin,(req,res)=>{
     const lead=db.prepare('SELECT * FROM leads WHERE id=?').get(sale.lead_id);if(!lead)throw new Error('Oportunidad no encontrada.');
     const commission=db.prepare('SELECT * FROM commissions WHERE sale_id=?').get(sale.id);
     if(db.prepare("SELECT 1 FROM payments WHERE sale_id=? AND status!='cancelled'").get(sale.id)||commission?.paid_amount>0||commission&&db.prepare('SELECT 1 FROM commission_payouts WHERE commission_id=? AND voided_at IS NULL').get(commission.id))throw new Error('Anula primero los cobros y pagos de comisión activos.');
-    const snapshot={action:'sale_reopened',reason,sale,commission,payments:db.prepare('SELECT * FROM payments WHERE sale_id=?').all(sale.id),payouts:commission?db.prepare('SELECT * FROM commission_payouts WHERE commission_id=?').all(commission.id):[]};
+    const snapshot={action:'sale_reopened',reason,sale,commission,project:db.prepare('SELECT * FROM projects WHERE sale_id=?').get(sale.id),payments:db.prepare('SELECT * FROM payments WHERE sale_id=?').all(sale.id),payouts:commission?db.prepare('SELECT * FROM commission_payouts WHERE commission_id=?').all(commission.id):[]};
     db.prepare('INSERT INTO financial_archive VALUES(?,?,?,?,?)').run(uid(),lead.id,JSON.stringify(snapshot),req.user.id,now());
     if(commission)db.prepare('DELETE FROM commission_payouts WHERE commission_id=?').run(commission.id);
+    db.prepare('DELETE FROM projects WHERE sale_id=?').run(sale.id);
     db.prepare('DELETE FROM commissions WHERE sale_id=?').run(sale.id);db.prepare('DELETE FROM payments WHERE sale_id=?').run(sale.id);db.prepare('DELETE FROM sales WHERE id=?').run(sale.id);
     const timestamp=now();db.prepare("UPDATE leads SET status='negotiation',updated_by=?,updated_at=? WHERE id=?").run(req.user.id,timestamp,lead.id);db.prepare("INSERT INTO lead_status_history(id,lead_id,old_status,new_status,actor_id) VALUES(?,?,?,'negotiation',?)").run(uid(),lead.id,lead.status,req.user.id);audit(lead.id,'UPDATE',lead,{...lead,status:'negotiation',sale_reopened:true,reason},req.user.id);
     return {lead_id:lead.id,status:'negotiation'};
@@ -413,7 +416,7 @@ app.get('/api/admin/leads/:id/deletion-preview',requireAuth,requireAdmin,(req,re
  const commission=sale?db.prepare('SELECT * FROM commissions WHERE sale_id=?').get(sale.id):null;
  const payments=sale?db.prepare('SELECT * FROM payments WHERE sale_id=?').all(sale.id):[];
  const payouts=commission?db.prepare('SELECT * FROM commission_payouts WHERE commission_id=?').all(commission.id):[];
- res.json({data:{lead,sale,commission,payments,payouts,can_delete:Boolean(lead.deleted_at)&&!payments.some(p=>p.status!=='cancelled')&&!payouts.some(p=>!p.voided_at)&&!(sale?.collected_amount>0||commission?.paid_amount>0||commission?.generated_amount>0)},error:null});
+ res.json({data:{lead,sale,commission,payments,payouts,can_delete:Boolean(lead.deleted_at)&&!payments.some(p=>p.status!=='cancelled')&&!payouts.some(p=>!p.voided_at)&&!(sale?.collected_amount>0||commission?.paid_amount>0||commission?.generated_amount>0)&&!db.prepare('SELECT 1 FROM client_leads WHERE lead_id=?').get(lead.id)&&!db.prepare('SELECT 1 FROM quotes WHERE lead_id=?').get(lead.id)},error:null});
 });
 app.delete('/api/admin/leads/:id',requireAuth,requireAdmin,async(req,res)=>{
   const validate=()=>{
@@ -421,6 +424,7 @@ app.delete('/api/admin/leads/:id',requireAuth,requireAdmin,async(req,res)=>{
     if(!lead)throw new Error('Oportunidad no encontrada.');
     if(!lead.deleted_at)throw new Error('Solo puedes eliminar oportunidades archivadas.');
     if(String(req.body?.confirm_name||'').trim()!==lead.company_name)throw new Error('Escribe exactamente el nombre de la empresa para confirmar.');
+    if(db.prepare('SELECT 1 FROM client_leads WHERE lead_id=?').get(lead.id)||db.prepare('SELECT 1 FROM quotes WHERE lead_id=?').get(lead.id))throw new Error('La oportunidad está vinculada a un cliente o cotización y debe conservarse.');
     const sale=db.prepare('SELECT * FROM sales WHERE lead_id=?').get(lead.id);
     if(sale){
       const payment=db.prepare("SELECT 1 FROM payments WHERE sale_id=? AND status!='cancelled' LIMIT 1").get(sale.id);
@@ -443,8 +447,9 @@ app.delete('/api/admin/leads/:id',requireAuth,requireAdmin,async(req,res)=>{
 
       const sale=db.prepare('SELECT * FROM sales WHERE lead_id=?').get(lead.id);
       if(sale){const commission=db.prepare('SELECT * FROM commissions WHERE sale_id=?').get(sale.id);
-        const snapshot={audit:db.prepare('SELECT * FROM lead_audit_log WHERE lead_id=?').all(lead.id),sale,commission,payments:db.prepare('SELECT * FROM payments WHERE sale_id=?').all(sale.id),payouts:commission?db.prepare('SELECT * FROM commission_payouts WHERE commission_id=?').all(commission.id):[]};
+        const snapshot={audit:db.prepare('SELECT * FROM lead_audit_log WHERE lead_id=?').all(lead.id),sale,commission,project:db.prepare('SELECT * FROM projects WHERE sale_id=?').get(sale.id),payments:db.prepare('SELECT * FROM payments WHERE sale_id=?').all(sale.id),payouts:commission?db.prepare('SELECT * FROM commission_payouts WHERE commission_id=?').all(commission.id):[]};
         db.prepare('INSERT INTO financial_archive VALUES(?,?,?,?,?)').run(uid(),lead.id,JSON.stringify(snapshot),req.user.id,now());
+        db.prepare('DELETE FROM projects WHERE sale_id=?').run(sale.id);
         db.prepare('DELETE FROM commission_payouts WHERE commission_id IN (SELECT id FROM commissions WHERE sale_id=?)').run(sale.id);
         db.prepare('DELETE FROM payments WHERE sale_id=?').run(sale.id);
       }
