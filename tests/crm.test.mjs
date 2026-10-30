@@ -41,6 +41,8 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
     const created=await call(admin,'/api/admin/users',{method:'POST',body:{full_name:name,email,password:'Sales-test-password-42'}});assert.equal(created.status,201);
   }
   const one=await login('one@example.test','Sales-test-password-42'), two=await login('two@example.test','Sales-test-password-42');
+  assert.equal((await call(one,'/api/finance/summary')).status,403,'sales users cannot view administrative financial summaries');
+  assert.equal((await call(one,'/api/finance/expenses',{method:'POST',body:{name:'Private expense',amount:20}})).status,403,'sales users cannot create company expenses');
   assert.equal((await call(one,'/api/platform/clients',{method:'POST',body:{display_name:'Sin permiso'}})).status,403);
 
   const create=await call(one,'/api/rpc/create_lead_if_unique',{method:'POST',body:{p_company:'Iceman',p_contact:'Pat Example',p_phone:'+593 99 123 4567',p_email:'PAT@example.test',p_website:'https://www.example.test/path',p_estimated_value:1000}});
@@ -68,9 +70,45 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   assert.equal(firstOverview.status,200);
   assert.equal(firstOverview.json.data.projects.length,1,'confirmed deposit creates one project');
   assert.equal((await call(two,'/api/platform/overview')).json.data.projects.length,0);
+  const projectId=firstOverview.json.data.projects[0].id;
+  const expenseBody={name:'Hosting de prueba',category:'hosting',amount:20,incurred_at:'2026-09-24',frequency:'monthly',status:'pending',project_id:projectId,request_key:'hosting-september-test'};
+  const expense=await call(admin,'/api/finance/expenses',{method:'POST',body:expenseBody});assert.equal(expense.status,201,JSON.stringify(expense.json));
+  assert.equal(expense.json.data.amount_cents,2000);assert.equal(expense.json.data.project_id,projectId);
+  const duplicateExpense=await call(admin,'/api/finance/expenses',{method:'POST',body:expenseBody});assert.equal(duplicateExpense.json.data.id,expense.json.data.id,'request keys prevent duplicate expenses');
+  assert.equal((await call(admin,'/api/finance/expenses')).json.data.length,1);
+  const paidExpense=await call(admin,`/api/finance/expenses/${expense.json.data.id}/pay`,{method:'POST',body:{paid_at:'2026-09-25',payment_method:'Transferencia'}});assert.equal(paidExpense.status,200);assert.equal(paidExpense.json.data.status,'paid');
+  const monthlyFinance=await call(admin,'/api/finance/summary?period=2026-09');assert.equal(monthlyFinance.status,200);assert.equal(monthlyFinance.json.data.collected_cents,60000);assert.equal(monthlyFinance.json.data.expenses_paid_cents,2000);
+  const projectProfit=await call(admin,'/api/finance/profitability');assert.equal(projectProfit.status,200);assert.equal(projectProfit.json.data[0].direct_cost_cents,2000);assert.equal(projectProfit.json.data[0].commission_cents,24000);assert.equal(projectProfit.json.data[0].benefit_cents,34000);
+  assert.equal((await call(one,'/api/finance/expenses')).status,403,'sales users cannot view company expenses');
+  assert.equal((await call(admin,`/api/finance/expenses/${expense.json.data.id}/void`,{method:'POST',body:{reason:'Incorrect test entry'}})).status,200);
+  assert.equal((await call(admin,'/api/finance/summary?period=2026-09')).json.data.expenses_paid_cents,0,'voided expenses are excluded from financial totals');
+  const taskCreate=await call(admin,`/api/platform/projects/${projectId}/tasks`,{method:'POST',body:{title:'Planificar estructura',priority:'high',due_at:'2026-11-02'}});
+  assert.equal(taskCreate.status,200,JSON.stringify(taskCreate.json));
+  let projectTasks=(await call(admin,`/api/platform/projects/${projectId}/tasks`)).json.data;
+  assert.equal(projectTasks.length,1);assert.equal(projectTasks[0].due_at,'2026-11-02T23:59:59.000Z');
+  const taskA=projectTasks[0];
+  const taskBResponse=await call(admin,`/api/platform/projects/${projectId}/tasks`,{method:'POST',body:{title:'Preparar diseño',depends_on:taskA.id}});
+  assert.equal(taskBResponse.status,200);const taskB=taskBResponse.json.data;
+  assert.equal((await call(admin,`/api/platform/project-tasks/${taskA.id}`,{method:'PATCH',body:{depends_on:taskB.id}})).status,400,'task dependencies cannot form a cycle');
+  assert.equal((await call(admin,`/api/platform/project-tasks/${taskB.id}`,{method:'PATCH',body:{status:'in_progress'}})).status,400,'a dependent task cannot start before its prerequisite');
+  assert.equal((await call(one,`/api/platform/projects/${projectId}/tasks`)).json.data.length,2,'project owner can read project tasks');
+  assert.equal((await call(two,`/api/platform/projects/${projectId}/tasks`)).status,404,'other sales users cannot read project tasks');
+  assert.equal((await call(one,`/api/platform/project-tasks/${taskA.id}`,{method:'PATCH',body:{status:'done'}})).status,403,'sales users cannot change project tasks');
+  assert.equal((await call(admin,`/api/platform/project-tasks/${taskA.id}`,{method:'PATCH',body:{status:'done'}})).status,200);
+  assert.equal((await call(admin,`/api/platform/project-tasks/${taskB.id}`,{method:'PATCH',body:{status:'in_progress'}})).status,200,'task can start after its prerequisite is complete');
   const client=await call(one,'/api/platform/clients/from-lead',{method:'POST',body:{lead_id:leadId,tax_id:'0991234567001'}});
   assert.equal(client.status,200);
   assert.equal((await call(one,'/api/platform/clients/from-lead',{method:'POST',body:{lead_id:leadId}})).json.data.id,client.json.data.id);
+  assert.equal((await call(one,'/api/finance/maintenance')).status,403,'sales users cannot view maintenance financials');
+  const maintenance=await call(admin,'/api/finance/maintenance',{method:'POST',body:{client_id:client.json.data.id,service_name:'Mantenimiento web',monthly_fee:99,started_at:'2026-09-01',next_due_at:'2026-10-01'}});assert.equal(maintenance.status,201,JSON.stringify(maintenance.json));
+  assert.equal((await call(admin,'/api/finance/summary?period=2026-09')).json.data.mrr_cents,9900);
+  const recurringInvoice=await call(admin,`/api/finance/maintenance/${maintenance.json.data.id}/invoices`,{method:'POST',body:{period:'2026-09',due_at:'2026-09-10'}});assert.equal(recurringInvoice.status,201,JSON.stringify(recurringInvoice.json));assert.equal(recurringInvoice.json.data.amount_cents,9900);
+  assert.equal((await call(admin,`/api/finance/maintenance/${maintenance.json.data.id}/invoices`,{method:'POST',body:{period:'2026-09'}})).status,400,'one maintenance invoice per contract and period');
+  const partialBody={amount:40,paid_at:'2026-09-20',payment_method:'Transferencia',request_key:'maintenance-partial-test'};
+  const partial=await call(admin,`/api/finance/maintenance/invoices/${recurringInvoice.json.data.id}/payments`,{method:'POST',body:partialBody});assert.equal(partial.status,201);assert.equal(partial.json.data.amount_cents,4000);
+  const duplicatePartial=await call(admin,`/api/finance/maintenance/invoices/${recurringInvoice.json.data.id}/payments`,{method:'POST',body:partialBody});assert.equal(duplicatePartial.json.data.id,partial.json.data.id,'maintenance payment request key is idempotent');
+  const finalPart=await call(admin,`/api/finance/maintenance/invoices/${recurringInvoice.json.data.id}/payments`,{method:'POST',body:{amount:59,paid_at:'2026-09-25',request_key:'maintenance-final-test'}});assert.equal(finalPart.status,201);
+  assert.equal((await call(admin,'/api/finance/summary?period=2026-09')).json.data.recurring_collected_cents,9900);
   assert.equal((await call(two,`/api/platform/clients/${client.json.data.id}`)).status,404);
   const quote=await call(one,'/api/platform/quotes',{method:'POST',body:{client_id:client.json.data.id,lead_id:leadId,items:[{description:'Desarrollo web',quantity:2,unit_price:'600.00'}],discount:'0',tax_rate_bps:0,deposit:'600'}});
   assert.equal(quote.status,200,JSON.stringify(quote.json));
@@ -311,6 +349,33 @@ test('CRM authentication, ownership, duplicates, activities and commissions', { 
   assert.equal((await call(admin,'/api/data/payments',{method:'POST',body:{sale_id:thirdSale.id,amount:50,paid_at:'2026-10-29',request_key:'third-first'}})).status,200);
   assert.equal((await call(three,'/api/platform/overview')).json.data.projects.length,0,'deposit threshold not met');
   assert.equal((await call(admin,'/api/data/payments',{method:'POST',body:{sale_id:thirdSale.id,amount:50,paid_at:'2026-10-29',request_key:'third-second'}})).status,200);
+  assert.equal((await call(three,'/api/finance/ledger')).status,403,'sales users cannot view the treasury ledger');
+  const account=await call(admin,'/api/finance/accounts',{method:'POST',body:{name:'Banco de prueba',kind:'bank'}});assert.equal(account.status,201,JSON.stringify(account.json));
+  assert.equal((await call(admin,`/api/finance/accounts/${account.json.data.id}/opening-balance`,{method:'POST',body:{amount:5000,date:'2026-09-01',note:'Saldo confirmado en extracto de prueba'}})).status,201);
+  const manualMovementBody={account_id:account.json.data.id,direction:'out',amount_cents:500,occurred_at:'2026-10-01',kind:'withdrawal',memo:'Retiro de prueba',request_key:'finance-withdrawal-test'};const manualMovement=await call(admin,'/api/finance/movements',{method:'POST',body:manualMovementBody});assert.equal(manualMovement.status,201,JSON.stringify(manualMovement.json));assert.equal((await call(admin,'/api/finance/movements',{method:'POST',body:manualMovementBody})).json.data.id,manualMovement.json.data.id,'manual movements are idempotent');assert.equal((await call(admin,'/api/finance/movements',{method:'POST',body:{...manualMovementBody,amount_cents:600}})).status,400,'idempotency key cannot be reused for different movement data');
+  for(const month of ['2026-09','2026-10']){
+    const ledger=(await call(admin,`/api/finance/ledger?period=${month}`)).json.data;
+    for(const movement of ledger.movements.filter(m=>!m.voided_at&&!m.reconciled_at)){
+      const reconciled=await call(admin,`/api/finance/movements/${movement.id}/reconcile`,{method:'PATCH',body:{account_id:account.json.data.id,reference:`TEST-${movement.id.slice(0,8)}`}});assert.equal(reconciled.status,200,JSON.stringify(reconciled.json));
+    }
+  }
+  const verifiedLedger=(await call(admin,'/api/finance/ledger?period=2026-10')).json.data;assert.equal(verifiedLedger.verified,true,JSON.stringify(verifiedLedger));assert.equal(verifiedLedger.accounts[0].opening_balance_cents,500000);
+  const openReceivable=(await call(admin,'/api/finance/receivables')).json.data.find(r=>r.sale_id===thirdSale.id);assert.ok(openReceivable);assert.equal(openReceivable.due_at,null);assert.equal((await call(admin,`/api/finance/receivables/${thirdSale.id}/due-date`,{method:'PUT',body:{due_at:'2026-08-15'}})).status,200);assert.equal((await call(admin,'/api/finance/receivables')).json.data.find(r=>r.sale_id===thirdSale.id).due_at,'2026-08-15T12:00:00-05:00');
+  const report=await call(admin,'/api/finance/reports?period=2026-09');assert.equal(report.status,200);assert.ok(report.json.data.collected_cents>0);assert.equal(report.json.data.commissions_paused,false);
+  assert.equal((await call(admin,'/api/finance/reports?period=2026-Q3')).json.data.contracted_cents,report.json.data.contracted_cents,'quarterly report period uses the same Ecuador date window');
+  assert.equal((await call(admin,'/api/finance/reports?from=2026-09-01&to=2026-09-30')).json.data.contracted_cents,report.json.data.contracted_cents,'custom report ranges are supported');
+  const projection=await call(admin,'/api/finance/projections/simulate',{method:'POST',body:{projects_per_month:2,average_price:1000,commissionable_percent:50,monthly_expenses:300,new_maintenances:1,average_maintenance_fee:100,cancellations:0,reinvestment_percent:25,collection_rate:80,collection_delay_months:1}});assert.equal(projection.status,200);assert.match(projection.json.data.label,/PROYECCIÓN/);assert.equal(projection.json.data.contracted_cents,200000);assert.deepEqual(projection.json.data.scenarios.map(x=>x.label),['PROYECCIÓN conservadora','PROYECCIÓN base','PROYECCIÓN optimista']);
+  const preview=await call(admin,'/api/finance/distributions/preview',{method:'POST',body:{period:'2026-09'}});assert.equal(preview.status,200,JSON.stringify(preview.json));
+  assert.equal(preview.json.data.allocations.reduce((n,x)=>n+x.percentage_bps,0),10000);
+  const distribution=await call(admin,'/api/finance/distributions',{method:'POST',body:{period:'2026-09',confirm:true}});assert.equal(distribution.status,201,JSON.stringify(distribution.json));
+  assert.equal((await call(admin,'/api/finance/distributions',{method:'POST',body:{period:'2026-09',confirm:true}})).status,409,'a period cannot be distributed twice');
+  const csv=await fetch(`${base}/api/finance/reports.csv?period=2026-09`,{headers:{cookie:admin}});assert.equal(csv.status,200);assert.match(await csv.text(),/contracted_cents/);
+  const reportPdf=await fetch(`${base}/api/finance/reports.pdf?period=2026-Q3`,{headers:{cookie:admin}});assert.equal(reportPdf.status,200);assert.match(Buffer.from(await reportPdf.arrayBuffer()).toString('latin1'),/%PDF-1.4/);
+  assert.equal((await call(admin,'/api/finance/summary?period=2026-Q3')).status,200,'financial summary supports quarterly periods');
+  const overdueInvoice=await call(admin,`/api/finance/maintenance/${maintenance.json.data.id}/invoices`,{method:'POST',body:{period:'2026-08',due_at:'2026-08-31'}});assert.equal(overdueInvoice.status,201);
+  assert.equal((await call(admin,'/api/finance/alerts/rules/overdue',{method:'PUT',body:{enabled:true}})).status,200);
+  const firstAlerts=(await call(admin,'/api/finance/alerts')).json.data;assert.ok(firstAlerts.some(a=>a.event_key==='invoice:'+overdueInvoice.json.data.id));assert.ok(firstAlerts.some(a=>a.event_key==='sale:'+thirdSale.id),'overdue receivables with explicitly assigned due dates are alerted');
+  const secondAlerts=(await call(admin,'/api/finance/alerts')).json.data;assert.equal(secondAlerts.filter(a=>a.event_key==='invoice:'+overdueInvoice.json.data.id).length,1,'alert events are deduplicated');
   const ownClient=(await call(three,'/api/platform/overview')).json.data.clients[0];
   assert.equal(ownClient.contracted_cents,20000);
   assert.equal(ownClient.collected_cents,10000);

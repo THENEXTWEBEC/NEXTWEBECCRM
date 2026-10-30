@@ -12,8 +12,9 @@
     "build": "npm run check",
     "migrate": "node server/migrate.mjs",
     "create-admin": "node scripts/create-admin.mjs",
+    "reset-password": "node scripts/reset-password.mjs",
     "backup": "node scripts/backup.mjs",
-    "check": "node --check server/index.mjs && node --check server/db.mjs && node --check src/app.js && node --check src/api.js && node --check scripts/create-admin.mjs && node --check scripts/backup.mjs && node --check src/domain.js && node --check server/workflow.mjs && node --check server/platform.mjs",
+    "check": "node --check server/index.mjs && node --check server/db.mjs && node --check server/finance.mjs && node --check src/app.js && node --check src/api.js && node --check src/domain.js && node --check server/workflow.mjs && node --check server/platform.mjs && node --check scripts/create-admin.mjs && node --check scripts/reset-password.mjs && node --check scripts/backup.mjs",
     "test": "node --test"
   },
   "dependencies": {

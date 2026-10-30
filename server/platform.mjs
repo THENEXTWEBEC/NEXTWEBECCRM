@@ -37,6 +37,17 @@ const getQuote = (user, quoteId) => {
   if (user.role !== 'admin' && (!quote.lead_id || !db.prepare('SELECT 1 FROM leads WHERE id=? AND owner_id=? AND deleted_at IS NULL').get(quote.lead_id, user.id))) throw fail('Cotización no encontrada.', 404);
   return quote;
 };
+const getProject = (user, projectId) => {
+  const project = db.prepare('SELECT p.*,l.owner_id AS lead_owner_id,l.deleted_at AS lead_deleted_at FROM projects p JOIN sales s ON s.id=p.sale_id JOIN leads l ON l.id=s.lead_id WHERE p.id=?').get(projectId);
+  if (!project || (user.role !== 'admin' && (project.lead_owner_id !== user.id || project.lead_deleted_at))) throw fail('Proyecto no encontrado.', 404);
+  return project;
+};
+const projectTaskDate = value => {
+  const result = optional(value, 40);
+  if (!result) return null;
+  if (!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2}))?$/.test(result) || !Number.isFinite(Date.parse(result))) throw fail('Fecha límite inválida.');
+  return result.length === 10 ? `${result}T23:59:59.000Z` : new Date(result).toISOString();
+};
 const audit = (entity, entityId, operation, actorId, before, after) => db.prepare(
   'INSERT INTO platform_audit(id,entity,entity_id,operation,actor_id,before_data,after_data,created_at) VALUES(?,?,?,?,?,?,?,?)'
 ).run(id(), entity, entityId, operation, actorId, before ? JSON.stringify(before) : null, after ? JSON.stringify(after) : null, stamp());
@@ -204,8 +215,7 @@ platform.post('/quotes/:id/convert', wrap(req => db.transaction(() => {
 })()));
 platform.get('/quotes/:id', wrap(req => quoteDetail(getQuote(req.user, req.params.id).id)));
 platform.patch('/projects/:id', wrap(req => db.transaction(() => {
-  const old = db.prepare('SELECT p.*,l.owner_id FROM projects p JOIN sales s ON s.id=p.sale_id JOIN leads l ON l.id=s.lead_id WHERE p.id=?').get(req.params.id);
-  if (!old || !leadAccess(req.user, old)) throw fail('Proyecto no encontrado.', 404);
+  const old = getProject(req.user, req.params.id);
   if (req.user.role !== 'admin') throw fail('Solo administración puede cambiar el proyecto.', 403);
   const statuses = ['pending_content','planning','design','development','internal_review','client_review','corrections','approved','publication','delivered'];
   const status = req.body?.status;
@@ -215,6 +225,65 @@ platform.patch('/projects/:id', wrap(req => db.transaction(() => {
   audit('project', old.id, 'status', req.user.id, old, result);
   return result;
 })()));
+
+platform.get('/projects/:id/tasks', wrap(req => {
+  const project = getProject(req.user, req.params.id);
+  return db.prepare(`SELECT t.*,u.full_name AS assignee_name,d.title AS dependency_title,d.status AS dependency_status
+    FROM project_tasks t LEFT JOIN users u ON u.id=t.assignee_id LEFT JOIN project_tasks d ON d.id=t.depends_on
+    WHERE t.project_id=? ORDER BY CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
+    CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,t.due_at,t.created_at`).all(project.id);
+}));
+
+platform.post('/projects/:id/tasks', wrap(req => db.transaction(() => {
+  const project = getProject(req.user, req.params.id);
+  if (req.user.role !== 'admin') throw fail('Solo administración puede gestionar las tareas del proyecto.', 403);
+  const title = text(req.body?.title, 160);
+  if (!title) throw fail('Indica el nombre de la tarea.');
+  const description = optional(req.body?.description, 2000);
+  const priority = req.body?.priority || 'medium';
+  if (!['low','medium','high','urgent'].includes(priority)) throw fail('Prioridad de tarea inválida.');
+  const dueAt = projectTaskDate(req.body?.due_at);
+  const assigneeId = optional(req.body?.assignee_id, 80);
+  if (assigneeId && !db.prepare('SELECT 1 FROM users WHERE id=? AND is_active=1').get(assigneeId)) throw fail('El responsable no existe o está inactivo.');
+  const dependsOn = optional(req.body?.depends_on, 80);
+  if (dependsOn && !db.prepare('SELECT 1 FROM project_tasks WHERE id=? AND project_id=?').get(dependsOn, project.id)) throw fail('La dependencia debe pertenecer al mismo proyecto.');
+  const taskId = id(), at = stamp();
+  db.prepare(`INSERT INTO project_tasks(id,project_id,title,description,priority,due_at,assignee_id,depends_on,created_by,updated_by,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(taskId, project.id, title, description, priority, dueAt, assigneeId, dependsOn, req.user.id, req.user.id, at, at);
+  const task = db.prepare('SELECT * FROM project_tasks WHERE id=?').get(taskId);
+  audit('project_task', taskId, 'create', req.user.id, null, task);
+  return task;
+}).immediate()));
+
+platform.patch('/project-tasks/:id', wrap(req => db.transaction(() => {
+  const old = db.prepare('SELECT * FROM project_tasks WHERE id=?').get(req.params.id);
+  if (!old) throw fail('Tarea no encontrada.', 404);
+  getProject(req.user, old.project_id);
+  if (req.user.role !== 'admin') throw fail('Solo administración puede gestionar las tareas del proyecto.', 403);
+  const title = req.body?.title === undefined ? old.title : text(req.body.title, 160);
+  const description = req.body?.description === undefined ? old.description : optional(req.body.description, 2000);
+  const priority = req.body?.priority === undefined ? old.priority : req.body.priority;
+  const status = req.body?.status === undefined ? old.status : req.body.status;
+  if (!title || !['low','medium','high','urgent'].includes(priority) || !['open','in_progress','done','cancelled'].includes(status)) throw fail('Título, prioridad o estado de tarea inválidos.');
+  const dueAt = req.body?.due_at === undefined ? old.due_at : projectTaskDate(req.body.due_at);
+  const assigneeId = req.body?.assignee_id === undefined ? old.assignee_id : optional(req.body.assignee_id, 80);
+  if (assigneeId && !db.prepare('SELECT 1 FROM users WHERE id=? AND is_active=1').get(assigneeId)) throw fail('El responsable no existe o está inactivo.');
+  const dependsOn = req.body?.depends_on === undefined ? old.depends_on : optional(req.body.depends_on, 80);
+  if (dependsOn) {
+    if (dependsOn === old.id || !db.prepare('SELECT 1 FROM project_tasks WHERE id=? AND project_id=?').get(dependsOn, old.project_id)) throw fail('La dependencia debe ser otra tarea del mismo proyecto.');
+    const cycle = db.prepare(`WITH RECURSIVE chain(id,depends_on) AS (SELECT id,depends_on FROM project_tasks WHERE id=? UNION ALL SELECT t.id,t.depends_on FROM project_tasks t JOIN chain c ON t.id=c.depends_on WHERE c.depends_on IS NOT NULL) SELECT 1 FROM chain WHERE id=? LIMIT 1`).get(dependsOn, old.id);
+    if (cycle) throw fail('La dependencia crearía un ciclo entre tareas.');
+    const dependency = db.prepare('SELECT status FROM project_tasks WHERE id=?').get(dependsOn);
+    if (status === 'in_progress' && dependency.status !== 'done') throw fail('Completa la tarea de la que depende antes de iniciar esta tarea.');
+  }
+  const at = stamp();
+  db.prepare(`UPDATE project_tasks SET title=?,description=?,priority=?,status=?,due_at=?,assignee_id=?,depends_on=?,updated_by=?,updated_at=? WHERE id=?`)
+    .run(title, description, priority, status, dueAt, assigneeId, dependsOn, req.user.id, at, old.id);
+  db.prepare('UPDATE projects SET updated_at=? WHERE id=?').run(at, old.project_id);
+  const task = db.prepare('SELECT * FROM project_tasks WHERE id=?').get(old.id);
+  audit('project_task', old.id, 'update', req.user.id, old, task);
+  return task;
+}).immediate()));
 
 // A dependency-free PDF writer with page breaks for long item lists and conditions.
 function quotePdf(quote, client) {

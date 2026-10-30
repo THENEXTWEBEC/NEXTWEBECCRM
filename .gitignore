@@ -1,7 +1,10 @@
 .env
+.env.production
 .env.local
 .DS_Store
 node_modules/
 data/*.db
 data/*.db-*
 backups/*.db
+
+data/backups/
