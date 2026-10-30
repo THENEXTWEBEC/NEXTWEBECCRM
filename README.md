@@ -120,6 +120,8 @@ Para publicar sin una tarifa mensual de software, hace falta disponer de una má
 
 Para `crm.thenextwebec.com`, crea en el DNS del dominio un registro `A` para `crm` hacia la IP pública de la máquina, y un registro `AAAA` si se usa IPv6. Si se usa un proxy externo del hosting, sigue el destino que este indique. Configura Caddy para `crm.thenextwebec.com` y reenvía el tráfico al puerto local 3000; Caddy solicita y renueva HTTPS automáticamente.
 
+La configuración lista para producción está en `compose.production.yml`, `Caddyfile` y `.env.production.example`. La guía completa para Oracle Cloud está en [`docs/oracle-cloud-deployment.md`](docs/oracle-cloud-deployment.md).
+
 ## Seguridad y salud del servidor
 
 - `/api/health` confirma que Express y SQLite responden sin revelar ruta ni datos.

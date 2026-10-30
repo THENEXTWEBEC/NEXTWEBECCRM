@@ -10,6 +10,7 @@ import { db, migrate, databasePath, verifyBackup } from './db.mjs';
 import { stages } from '../src/domain.js';
 import { validDate, activity, syncNext, createFollowup, saleFor, recomputeSale, setStage, financialSummary, teamAndCommissionsPaused } from './workflow.mjs';
 import { platform } from './platform.mjs';
+import { finance, periodBounds } from './finance.mjs';
 
 migrate();
 const app = express();
@@ -79,10 +80,75 @@ app.use('/api', (req,res,next) => {
   next();
 });
 app.use('/api/platform', requireAuth, platform);
+app.use('/api/finance', requireAuth, requireAdmin, finance);
 
 app.get('/api/health', (_req, res) => {
   try { db.prepare('SELECT 1').get(); res.json({ status: 'ok', database: 'connected' }); }
   catch { res.status(503).json({ status: 'error', database: 'unavailable' }); }
+});
+
+const expenseCategories=new Set(['hosting','advertising','software','tools','external_services','other']);
+const expenseFrequencies=new Set(['once','monthly','yearly']);
+const expenseById=id=>db.prepare(`SELECT e.*,p.project_name FROM expenses e LEFT JOIN projects p ON p.id=e.project_id WHERE e.id=?`).get(id);
+const auditFinance=(entity,id,operation,before,after,actor)=>db.prepare('INSERT INTO platform_audit(id,entity,entity_id,operation,actor_id,before_data,after_data,created_at) VALUES(?,?,?,?,?,?,?,?)').run(uid(),entity,id,operation,actor,before?JSON.stringify(before):null,after?JSON.stringify(after):null,now());
+app.get('/api/finance/summary',requireAuth,requireAdmin,(req,res)=>{
+ try{
+  const period=String(req.query.period||new Intl.DateTimeFormat('en-CA',{timeZone:'America/Guayaquil'}).format(new Date()).slice(0,7));
+  const [start,end]=periodBounds(period,req.query.from,req.query.to);
+  const sold=db.prepare(`SELECT COALESCE(SUM(ROUND(total_value*100)),0) AS cents FROM sales WHERE signed_at>=? AND signed_at<?`).get(start,end).cents;
+  const receivable=db.prepare(`SELECT COALESCE(SUM(MAX(0,ROUND(s.total_value*100)-COALESCE((SELECT SUM(ROUND(p.amount*100)) FROM payments p WHERE p.sale_id=s.id AND p.status='confirmed'),0))),0) AS cents FROM sales s`).get().cents;
+  const expenses=db.prepare(`SELECT COALESCE(SUM(CASE WHEN status='paid' AND paid_at>=? AND paid_at<? THEN amount_cents ELSE 0 END),0) AS paid_cents,COALESCE(SUM(CASE WHEN status='pending' AND incurred_at>=? AND incurred_at<? THEN amount_cents ELSE 0 END),0) AS pending_cents FROM expenses`).get(start,end,start,end);
+  const totals=db.prepare(`SELECT COALESCE(SUM(CASE WHEN status='confirmed' THEN ROUND(amount*100) ELSE 0 END),0) AS collected FROM payments WHERE paid_at>=? AND paid_at<?`).get(start,end);
+  const comm=db.prepare(`SELECT COALESCE(SUM(MAX(0,ROUND(c.generated_amount*100)-ROUND(c.paid_amount*100))),0) AS pending FROM commissions c WHERE c.sale_id IN (SELECT id FROM sales WHERE commission_exempt=0)`).get();
+  const recurring=db.prepare(`SELECT COALESCE(SUM(monthly_fee_cents),0) AS mrr FROM maintenance_subscriptions WHERE status='active'`).get().mrr;
+  const recurringPaid=db.prepare(`SELECT COALESCE(SUM(p.amount_cents),0) AS cents FROM maintenance_payments p JOIN maintenance_invoices i ON i.id=p.invoice_id WHERE p.paid_at>=? AND p.paid_at<?`).get(start,end).cents;
+  const recurringPending=db.prepare(`SELECT COALESCE(SUM(MAX(0,i.amount_cents-COALESCE((SELECT SUM(p.amount_cents) FROM maintenance_payments p WHERE p.invoice_id=i.id),0))),0) AS cents FROM maintenance_invoices i WHERE i.status='pending'`).get().cents;
+  res.json({data:{period,contracted_cents:sold,collected_cents:totals.collected,receivable_cents:receivable,expenses_paid_cents:expenses.paid_cents,expenses_pending_cents:expenses.pending_cents,commissions_pending_cents:teamAndCommissionsPaused()?0:comm.pending,commissions_paused:teamAndCommissionsPaused(),mrr_cents:recurring,recurring_collected_cents:recurringPaid,recurring_pending_cents:recurringPending},error:null});
+ }catch{return err(res,500,'No se pudo consultar el resumen financiero.');}
+});
+app.get('/api/finance/maintenance',requireAuth,requireAdmin,(req,res)=>{
+ try{const subscriptions=db.prepare(`SELECT s.*,c.display_name AS client_name,p.project_name,COALESCE((SELECT SUM(i.amount_cents-COALESCE((SELECT SUM(mp.amount_cents) FROM maintenance_payments mp WHERE mp.invoice_id=i.id),0)) FROM maintenance_invoices i WHERE i.subscription_id=s.id AND i.status='pending'),0) AS pending_cents FROM maintenance_subscriptions s JOIN clients c ON c.id=s.client_id LEFT JOIN projects p ON p.id=s.project_id ORDER BY s.status='active' DESC,s.next_due_at`).all();const invoices=db.prepare(`SELECT i.*,s.service_name,c.display_name AS client_name,COALESCE((SELECT SUM(p.amount_cents) FROM maintenance_payments p WHERE p.invoice_id=i.id),0) AS collected_cents FROM maintenance_invoices i JOIN maintenance_subscriptions s ON s.id=i.subscription_id JOIN clients c ON c.id=s.client_id ORDER BY i.due_at DESC LIMIT 500`).all();return res.json({data:{subscriptions,invoices},error:null});}
+ catch{return err(res,500,'No se pudieron consultar los mantenimientos.');}
+});
+app.post('/api/finance/maintenance',requireAuth,requireAdmin,(req,res)=>{
+ const p=req.body||{};try{const clientId=String(p.client_id||''),service=String(p.service_name||'').trim(),fee=Math.round(Number(p.monthly_fee)*100),started=validDate(String(p.started_at||'')),due=validDate(String(p.next_due_at||''));if(!db.prepare('SELECT 1 FROM clients WHERE id=?').get(clientId))return err(res,400,'Selecciona un cliente existente.');if(!service||service.length>160||!Number.isSafeInteger(fee)||fee<=0)return err(res,400,'Revisa el servicio y la tarifa mensual.');if(p.project_id){const project=db.prepare(`SELECT COALESCE(p.client_id,cl.client_id) AS client_id FROM projects p JOIN sales s ON s.id=p.sale_id LEFT JOIN client_leads cl ON cl.lead_id=s.lead_id WHERE p.id=?`).get(String(p.project_id));if(!project||project.client_id!==clientId)return err(res,400,'El proyecto debe pertenecer al cliente seleccionado.');}const id=uid(),at=now();const row=db.transaction(()=>{db.prepare(`INSERT INTO maintenance_subscriptions(id,client_id,project_id,service_name,monthly_fee_cents,started_at,next_due_at,notes,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(id,clientId,p.project_id||null,service,fee,started,due,String(p.notes||'').trim()||null,req.user.id,at,at);const created=db.prepare(`SELECT s.*,c.display_name AS client_name,p.project_name FROM maintenance_subscriptions s JOIN clients c ON c.id=s.client_id LEFT JOIN projects p ON p.id=s.project_id WHERE s.id=?`).get(id);auditFinance('maintenance_subscription',id,'CREATE',null,created,req.user.id);return created;})();return res.status(201).json({data:row,error:null});}
+ catch(e){return err(res,400,safeError(e)||'No se pudo registrar el mantenimiento.');}
+});
+app.post('/api/finance/maintenance/:id/invoices',requireAuth,requireAdmin,(req,res)=>{
+ try{const p=req.body||{},period=String(p.period||'');if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(period))return err(res,400,'El período debe usar formato AAAA-MM.');const row=db.transaction(()=>{const sub=db.prepare('SELECT * FROM maintenance_subscriptions WHERE id=?').get(req.params.id);if(!sub||sub.status!=='active')throw new Error('No existe un mantenimiento activo para facturar.');const id=uid(),due=p.due_at?validDate(String(p.due_at)):sub.next_due_at,at=now();db.prepare(`INSERT INTO maintenance_invoices(id,subscription_id,period,amount_cents,due_at,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`).run(id,sub.id,period,sub.monthly_fee_cents,due,req.user.id,at,at);const [year,month]=period.split('-').map(Number),nextPeriod=month===12?`${year+1}-01`:`${year}-${String(month+1).padStart(2,'0')}`;if(sub.next_due_at.slice(0,10)<=`${period}-01`)db.prepare('UPDATE maintenance_subscriptions SET next_due_at=?,updated_at=? WHERE id=?').run(validDate(`${nextPeriod}-01`),at,sub.id);const invoice=db.prepare('SELECT * FROM maintenance_invoices WHERE id=?').get(id);auditFinance('maintenance_invoice',id,'CREATE',null,invoice,req.user.id);return invoice;})();return res.status(201).json({data:row,error:null});}
+ catch(e){return err(res,400,safeError(e)||'No se pudo generar la factura de mantenimiento.');}
+});
+app.post('/api/finance/maintenance/invoices/:id/payments',requireAuth,requireAdmin,(req,res)=>{
+ const p=req.body||{};try{const amount=Math.round(Number(p.amount)*100),paidAt=validDate(String(p.paid_at||new Date().toISOString())),key=p.request_key?String(p.request_key).slice(0,120):null;if(!Number.isSafeInteger(amount)||amount<=0)return err(res,400,'El abono debe ser mayor que cero.');const row=db.transaction(()=>{if(key){const old=db.prepare('SELECT * FROM maintenance_payments WHERE request_key=?').get(key);if(old){if(old.invoice_id!==req.params.id||old.amount_cents!==amount)throw new Error('La clave de solicitud ya se utilizó para otro abono.');return old;}}const invoice=db.prepare('SELECT * FROM maintenance_invoices WHERE id=?').get(req.params.id);if(!invoice||invoice.status!=='pending')throw new Error('La factura no existe o ya fue cerrada.');const paid=db.prepare('SELECT COALESCE(SUM(amount_cents),0) AS cents FROM maintenance_payments WHERE invoice_id=?').get(invoice.id).cents;if(amount>invoice.amount_cents-paid)throw new Error('El abono supera el saldo pendiente.');const id=uid(),at=now();db.prepare(`INSERT INTO maintenance_payments(id,invoice_id,amount_cents,paid_at,payment_method,reference,request_key,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)`).run(id,invoice.id,amount,paidAt,String(p.payment_method||'').trim()||null,String(p.reference||'').trim()||null,key,req.user.id,at);if(paid+amount===invoice.amount_cents)db.prepare(`UPDATE maintenance_invoices SET status='paid',updated_at=? WHERE id=?`).run(at,invoice.id);const created=db.prepare('SELECT * FROM maintenance_payments WHERE id=?').get(id);auditFinance('maintenance_invoice',invoice.id,'PAYMENT',invoice,created,req.user.id);return created;})();return res.status(201).json({data:row,error:null});}
+ catch(e){return err(res,400,safeError(e)||'No se pudo registrar el cobro.');}
+});
+app.get('/api/finance/profitability',requireAuth,requireAdmin,(_req,res)=>{
+ try{const rows=db.prepare(`SELECT p.id AS project_id,p.project_name,p.status AS project_status,s.id AS sale_id,s.total_value,l.company_name,l.owner_id,u.full_name AS seller,COALESCE((SELECT SUM(ROUND(pay.amount*100)) FROM payments pay WHERE pay.sale_id=s.id AND pay.status='confirmed'),0) AS collected_cents,COALESCE((SELECT SUM(e.amount_cents) FROM expenses e WHERE e.project_id=p.id AND e.status!='void'),0) AS direct_cost_cents,COALESCE(ROUND(c.generated_amount*100),0) AS commission_cents FROM projects p JOIN sales s ON s.id=p.sale_id JOIN leads l ON l.id=s.lead_id LEFT JOIN users u ON u.id=l.owner_id LEFT JOIN commissions c ON c.sale_id=s.id ORDER BY 9-10-11 DESC`).all().map(x=>({...x,total_value_cents:Math.round(x.total_value*100),benefit_cents:x.collected_cents-x.direct_cost_cents-x.commission_cents,margin_bps:x.collected_cents?Math.round((x.collected_cents-x.direct_cost_cents-x.commission_cents)*10000/x.collected_cents):null}));return res.json({data:rows,error:null});}
+ catch{return err(res,500,'No se pudo calcular la rentabilidad por proyecto.');}
+});
+app.get('/api/finance/expenses',requireAuth,requireAdmin,(req,res)=>{
+ try{const period=req.query.period?String(req.query.period):'',range=period||req.query.from||req.query.to?periodBounds(period,req.query.from,req.query.to):null;const rows=range?db.prepare(`SELECT e.*,p.project_name FROM expenses e LEFT JOIN projects p ON p.id=e.project_id WHERE e.incurred_at>=? AND e.incurred_at<? ORDER BY e.incurred_at DESC,e.created_at DESC LIMIT 500`).all(range[0],range[1]):db.prepare(`SELECT e.*,p.project_name FROM expenses e LEFT JOIN projects p ON p.id=e.project_id ORDER BY e.incurred_at DESC,e.created_at DESC LIMIT 500`).all();res.json({data:rows,error:null});}
+ catch{return err(res,500,'No se pudieron consultar los gastos.');}
+});
+app.post('/api/finance/expenses',requireAuth,requireAdmin,(req,res)=>{
+ const p=req.body||{};try{
+  const name=String(p.name||'').trim(),category=String(p.category||'other'),frequency=String(p.frequency||'once'),amountCents=Math.round(Number(p.amount)*100),occurredAt=validDate(String(p.incurred_at||'')),dueAt=p.due_at?validDate(String(p.due_at)):null,status=p.status==='paid'?'paid':'pending',id=uid(),at=now();
+  if(!name||name.length>160||!expenseCategories.has(category)||!expenseFrequencies.has(frequency)||!Number.isSafeInteger(amountCents)||amountCents<=0)return err(res,400,'Revisa el nombre, categoría, frecuencia e importe del gasto.');
+  if(p.project_id&&!db.prepare('SELECT 1 FROM projects WHERE id=?').get(String(p.project_id)))return err(res,400,'El proyecto relacionado no existe.');
+  const payDate=status==='paid'?validDate(String(p.paid_at||p.incurred_at)):null,requestKey=p.request_key?String(p.request_key).slice(0,120):null;
+  const row=db.transaction(()=>{if(requestKey){const previous=db.prepare('SELECT * FROM expenses WHERE request_key=?').get(requestKey);if(previous){if(previous.name!==name||previous.category!==category||previous.amount_cents!==amountCents||previous.incurred_at!==occurredAt||previous.frequency!==frequency||previous.project_id!==(p.project_id||null)||previous.due_at!==dueAt)throw new Error('La clave de solicitud ya se utilizó para otro gasto.');return expenseById(previous.id);}}
+   db.prepare(`INSERT INTO expenses(id,name,category,amount_cents,incurred_at,frequency,vendor,project_id,status,paid_at,payment_method,reference,receipt_url,notes,request_key,due_at,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,name,category,amountCents,occurredAt,frequency,String(p.vendor||'').trim()||null,p.project_id||null,status,payDate,String(p.payment_method||'').trim()||null,String(p.reference||'').trim()||null,String(p.receipt_url||'').trim()||null,String(p.notes||'').trim()||null,requestKey,dueAt,req.user.id,at,at);
+   const created=expenseById(id);auditFinance('expense',id,'CREATE',null,created,req.user.id);return created;})();
+  return res.status(201).json({data:row,error:null});
+ }catch(e){return err(res,400,safeError(e)||'No se pudo registrar el gasto.');}
+});
+app.post('/api/finance/expenses/:id/pay',requireAuth,requireAdmin,(req,res)=>{
+ try{const result=db.transaction(()=>{const before=expenseById(req.params.id);if(!before)throw new Error('Gasto no encontrado.');if(before.status!=='pending')throw new Error('Solo puedes pagar un gasto pendiente.');const paidAt=validDate(String(req.body?.paid_at||new Date().toISOString()));db.prepare(`UPDATE expenses SET status='paid',paid_at=?,payment_method=?,reference=?,updated_at=? WHERE id=?`).run(paidAt,String(req.body?.payment_method||'').trim()||null,String(req.body?.reference||'').trim()||null,now(),before.id);const after=expenseById(before.id);auditFinance('expense',before.id,'PAY',before,after,req.user.id);return after;})();return res.json({data:result,error:null});}
+ catch(e){return err(res,400,safeError(e));}
+});
+app.post('/api/finance/expenses/:id/void',requireAuth,requireAdmin,(req,res)=>{
+ try{const result=db.transaction(()=>{const before=expenseById(req.params.id),reason=String(req.body?.reason||'').trim();if(!before)throw new Error('Gasto no encontrado.');if(before.status==='void')throw new Error('El gasto ya está anulado.');if(reason.length<3||reason.length>1000)throw new Error('Indica un motivo de anulación.');db.prepare(`UPDATE expenses SET status='void',void_reason=?,voided_by=?,voided_at=?,updated_at=? WHERE id=?`).run(reason,req.user.id,now(),now(),before.id);const after=expenseById(before.id);auditFinance('expense',before.id,'VOID',before,after,req.user.id);return after;})();return res.json({data:result,error:null});}
+ catch(e){return err(res,400,safeError(e));}
 });
 app.get('/api/auth/session', (req,res) => {
   if(process.env.LOG_LEVEL==='debug')console.info('Auth session handler');
