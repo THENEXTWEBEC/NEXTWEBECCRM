@@ -1,6 +1,13 @@
 import { sb } from './api.js';
 
 const app = document.querySelector('#app');
+const activatableSelector='button,a,[role="button"],input[type="button"],input[type="submit"]';
+let trustedClickSequence=0;
+const pressedActivatables=new Map();
+app.addEventListener('click',e=>{if(e.isTrusted&&e.detail>0)trustedClickSequence++;},true);
+app.addEventListener('pointerdown',e=>{const target=e.target instanceof Element?e.target.closest(activatableSelector):null;if(target)pressedActivatables.set(e.pointerId,target);},true);
+app.addEventListener('pointerup',e=>{const target=e.target instanceof Element?e.target.closest(activatableSelector):null;const pressed=pressedActivatables.get(e.pointerId);pressedActivatables.delete(e.pointerId);if(!target||target!==pressed||target.disabled||target.getAttribute('aria-disabled')==='true')return;const sequence=trustedClickSequence;setTimeout(()=>{if(sequence===trustedClickSequence&&target.isConnected&&!target.disabled)target.click();},0);},true);
+app.addEventListener('pointercancel',e=>pressedActivatables.delete(e.pointerId),true);
 import { stages, followupTypes, activeStatus, fromEcuadorInput, ecuadorInput, ecuadorDay, dayGroups } from './domain.js';
 const sources = ['Prospección propia','LinkedIn','Instagram','Referido','WhatsApp','Email','Llamada','Networking','Lead entregado por NextWebEC','Otro'];
 const activityTypes = [['note','Nota'],['call','Llamada'],['whatsapp','WhatsApp'],['email','Email'],['meeting','Reunión'],['proposal','Propuesta enviada'],['response','Cliente respondió'],['other','Otro']];
