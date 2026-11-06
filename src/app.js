@@ -9,7 +9,7 @@ let followups=[],finance={},loadSequence=0;
 let financePeriod=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Guayaquil'}).format(new Date()).slice(0,7),financeFrom='',financeTo='';
 const financeQuery=()=>`period=${encodeURIComponent(financePeriod)}${financePeriod==='custom'&&financeFrom&&financeTo?`&from=${encodeURIComponent(financeFrom)}&to=${encodeURIComponent(financeTo)}`:''}`;
 let platformData={clients:[],links:[],quotes:[],projects:[]};
-let page='Dashboard', query='', filters={stage:'', owner:'', source:'', service:'', after:'', before:'', followup:''}, toastTimer;
+let page='Dashboard', query='', filters={stage:'', owner:'', source:'', service:'', after:'', before:'', followup:''}, toastTimer, viewSequence=0, financeSequence=0;
 const esc = (v='') => String(v ?? '').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money = n => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(Number(n||0));
 const date = v => v ? new Intl.DateTimeFormat('es-EC',{timeZone:'America/Guayaquil',day:'2-digit',month:'short',year:'numeric'}).format(/^\d{4}-\d{2}-\d{2}$/.test(String(v))?new Date(v+'T12:00:00-05:00'):new Date(v)) : '—';
@@ -61,7 +61,7 @@ function dashboardStats(items){
  ]:[['Mis oportunidades activas',active.length,'Prospectos en proceso'],['Valor del pipeline',money(pipeline),'Valor estimado de oportunidades activas'],['Seguimientos pendientes',pending.length,`${overdue} vencidos · ${grouped.today.length} para hoy`],['Valor vendido',money(finance.sold),'Valor final de ventas ganadas']];
  return `<div class="grid stats${isAdmin()?'':' executive-stats'}">${metrics.map(([label,value,note])=>`<article class="stat"><div class="stat-label">${label}</div><div class="stat-value">${value}</div><div class="stat-note">${note}</div></article>`).join('')}</div>`;
 }
-function renderPage(){const items=visibleLeads();if(page==='Dashboard')renderDashboard(items);else if(page==='Pipeline')renderPipeline(items);else if(page==='Oportunidades')renderOpportunities(items);else if(page==='Clientes')renderClients();else if(page==='Cotizaciones')renderQuotes();else if(page==='Proyectos')renderProjects();else if(page==='Seguimientos')renderFollowups(items);else if(page==='Finanzas'&&isAdmin())renderFinance();else if(page==='Archivados'&&isAdmin())renderArchived();else if(page==='Configuración')renderSettings();}
+function renderPage(){viewSequence++;const items=visibleLeads();if(page==='Dashboard')renderDashboard(items);else if(page==='Pipeline')renderPipeline(items);else if(page==='Oportunidades')renderOpportunities(items);else if(page==='Clientes')renderClients();else if(page==='Cotizaciones')renderQuotes();else if(page==='Proyectos')renderProjects();else if(page==='Seguimientos')renderFollowups(items);else if(page==='Finanzas'&&isAdmin())renderFinance();else if(page==='Archivados'&&isAdmin())renderArchived();else if(page==='Configuración')renderSettings();}
 function pipelineSummary(items){return `<section class="panel"><div class="panel-head"><h2>Resumen del pipeline</h2></div>${stages.map(([key,name])=>`<div class="pipeline-summary"><span>${name}</span><b>${items.filter(x=>x.status===key).length}</b></div>`).join('')}</section>`;}
 function receivablesPanel(){const rows=sales.filter(s=>Number(s.pending_balance)>0).sort((a,b)=>Number(b.pending_balance)-Number(a.pending_balance));const total=rows.reduce((sum,s)=>sum+Math.round(Number(s.pending_balance)*100),0)/100;return `<section class="panel receivables"><div class="panel-head"><div><h2>Por cobrar</h2><span class="subtext">${rows.length} proyectos · ${money(total)} pendientes</span></div></div>${rows.slice(0,8).map(s=>{const lead=[...leads,...archivedLeads].find(l=>l.id===s.lead_id);return `<button class="receivable-row" data-open="${s.lead_id}"><span><b>${esc(lead?.company_name||s.company_name||'Proyecto')}</b><small>${esc(person(s.owner_id))}${lead?.next_action_at?' · próximo seguimiento '+dt(lead.next_action_at):' · sin fecha de cobro'}</small></span><strong>${money(s.pending_balance)}</strong></button>`;}).join('')||'<div class="empty"><strong>Todo cobrado</strong>No hay saldos pendientes.</div>'}</section>`;}
 function renderDashboard(items){
@@ -103,6 +103,7 @@ function renderSettings(){setView(`<div class="page-head"><div><h1>Configuració
 const expenseCategoryLabels={hosting:'Hosting',advertising:'Publicidad',software:'Software',tools:'Herramientas',external_services:'Servicios externos',other:'Otros'};
 const expenseFrequencyLabels={once:'Único',monthly:'Mensual',yearly:'Anual'};
 async function renderFinance(){
+ const currentView=viewSequence,sequence=++financeSequence;
  setView('<div class="finance-view"><div class="finance-loading"><span class="finance-spinner"></span>Preparando tu resumen financiero…</div></div>');
  if(financePeriod==='custom'&&(!financeFrom||!financeTo||financeFrom>financeTo)){
   setView(`<div class="finance-view"><div class="page-head"><div><span class="finance-kicker">Tu dinero, más claro</span><h1>Finanzas</h1><p>Elige un rango válido en horario de Ecuador.</p></div></div><section class="finance-panel"><div class="form-grid"><div class="field"><label>Desde</label><input id="finance-from" type="date" value="${esc(financeFrom)}"></div><div class="field"><label>Hasta</label><input id="finance-to" type="date" value="${esc(financeTo)}"></div></div></section></div>`);
@@ -110,6 +111,7 @@ async function renderFinance(){
   return;
  }
  const [summaryResult,expenseResult,maintenanceResult,profitResult,ledgerResult,reportResult,receivableResult]=await Promise.all([sb.request(`/api/finance/summary?${financeQuery()}`),sb.request(`/api/finance/expenses?${financeQuery()}`),sb.request('/api/finance/maintenance'),sb.request('/api/finance/profitability'),sb.request(`/api/finance/ledger?${financeQuery()}`),sb.request(`/api/finance/reports?${financeQuery()}`),sb.request('/api/finance/receivables')]);
+ if(currentView!==viewSequence||sequence!==financeSequence||page!=='Finanzas')return;
  if(summaryResult.error||expenseResult.error||maintenanceResult.error||profitResult.error||ledgerResult.error||reportResult.error||receivableResult.error){setView(`<div class="alert">${esc(errText(summaryResult.error||expenseResult.error||maintenanceResult.error||profitResult.error||ledgerResult.error||reportResult.error||receivableResult.error))}</div>`);return;}
  const s=summaryResult.data,rows=expenseResult.data,maintenance=maintenanceResult.data,profitability=profitResult.data,ledger=ledgerResult.data,report=reportResult.data,receivables=receivableResult.data;
  const collectedRate=s.contracted_cents>0?Math.min(100,Math.round((s.collected_cents/s.contracted_cents)*100)):0;
